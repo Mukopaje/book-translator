@@ -1,0 +1,10 @@
+numpy>=2.0
+opencv-python
+Pillow
+reportlab
+python-dotenv
+streamlit
+pytesseract
+google-cloud-vision
+google-cloud-translate
+google-generativeai
