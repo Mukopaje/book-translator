@@ -63,7 +63,12 @@ def process_page_task(page_idx):
     page['status'] = 'processing'
     
     try:
-        translator = BookTranslator(page['path'], OUTPUT_DIR)
+        # Get book context from metadata
+        book_context = st.session_state['metadata'].get('context', '')
+        if st.session_state['metadata'].get('title'):
+            book_context = f"{st.session_state['metadata']['title']}. {book_context}"
+            
+        translator = BookTranslator(page['path'], OUTPUT_DIR, book_context=book_context)
         results = translator.process_page(verbose=True)
         
         if results.get('success'):
@@ -100,6 +105,11 @@ def render_sidebar():
         st.header("Project Settings")
         st.session_state['metadata']['title'] = st.text_input('Book Title', st.session_state['metadata'].get('title', ''))
         st.session_state['metadata']['author'] = st.text_input('Author', st.session_state['metadata'].get('author', ''))
+        st.session_state['metadata']['context'] = st.text_area(
+            'Book Context / Description', 
+            st.session_state['metadata'].get('context', ''),
+            help="Describe what the book is about (e.g. '4-stroke engine maintenance manual'). This helps the AI use correct technical terminology."
+        )
         
         st.markdown("---")
         st.header("Upload")
@@ -190,12 +200,12 @@ def render_results_view():
     with tab1:
         c1, c2 = st.columns(2)
         with c1:
-            st.image(page['path'], caption="Original", use_column_width='always')
+            st.image(page['path'], caption="Original", use_container_width=True)
         with c2:
             # Check for translated image
             preview_path = os.path.join(OUTPUT_DIR, f"{stem}_translated.jpg")
             if os.path.exists(preview_path):
-                st.image(preview_path, caption="Translated Preview", use_column_width='always')
+                st.image(preview_path, caption="Translated Preview", use_container_width=True)
             else:
                 st.info("PDF Preview not available as image. Check PDF View tab.")
             

@@ -19,10 +19,20 @@ class DiagramTranslator:
     - Creates clean diagram images with translated labels
     """
     
-    def __init__(self, google_credentials_path=None):
-        """Initialize with Google OCR for diagram text extraction"""
+    def __init__(self, google_credentials_path=None, processing_mode="enhanced"):
+        """Initialize with Google OCR for diagram text extraction
+        
+        Args:
+            google_credentials_path: kept for backward compatibility (not used)
+            processing_mode: "enhanced" | "light" | "raw". Controls how aggressively
+                the background is processed. Default is "enhanced" for highest
+                contrast and clean white background.
+        """
         # GoogleOCR handles credentials internally via env vars, so we don't pass path
         self.ocr = GoogleOCR()
+
+        # How diagrams are processed visually
+        self.processing_mode = processing_mode
         
         # Setup font for overlays
         try:
@@ -32,9 +42,12 @@ class DiagramTranslator:
         except:
             self.font_path = None
 
-    def _inpaint_text_regions(self, pil_image, text_boxes):
-        """
-        Remove text from the image using OpenCV inpainting for a cleaner look.
+    def _inpaint_text_regions(self, pil_image, text_boxes, fill_with_white=False):
+        """Remove or neutralize text regions in the image.
+
+        If fill_with_white is False, use OpenCV inpainting to synthesize
+        background texture. If True, simply paint the regions solid white
+        to avoid introducing extra noise.
         """
         try:
             # Convert PIL to OpenCV (RGB -> BGR)
@@ -52,10 +65,19 @@ class DiagramTranslator:
                 y = max(0, y - padding)
                 w = min(img_bgr.shape[1] - x, w + 2*padding)
                 h = min(img_bgr.shape[0] - y, h + 2*padding)
-                
-                cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
-                
-            # Inpaint
+
+                if fill_with_white:
+                    # Paint solid white to keep background plain
+                    cv2.rectangle(img_bgr, (x, y), (x + w, y + h), (255, 255, 255), -1)
+                else:
+                    cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
+
+            if fill_with_white:
+                # No inpainting, just return the modified image
+                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                return Image.fromarray(img_rgb)
+
+            # Inpaint using the mask
             inpainted = cv2.inpaint(img_bgr, mask, 3, cv2.INPAINT_TELEA)
             
             # Convert back to PIL (BGR -> RGB)
@@ -66,35 +88,32 @@ class DiagramTranslator:
             return pil_image
     
     def _enhance_diagram_quality(self, pil_image):
-        """
-        Enhance diagram with advanced background removal.
-        - Uses adaptive thresholding to create a clean black & white image.
+        """Enhance diagram with stronger background removal.
+
+        This is the "enhanced" mode that uses adaptive thresholding to
+        produce very high contrast black-and-white diagrams.
         """
         try:
             img_np = np.array(pil_image.convert('L'))  # Convert to grayscale
             
             # 1. Denoise first to remove paper grain/noise
-            # GaussianBlur is fast and effective for this
             img_blur = cv2.GaussianBlur(img_np, (5, 5), 0)
             
             # 2. Adaptive Thresholding
-            # Increased block size (21) and constant (15) to be less sensitive to noise
             img_thresh = cv2.adaptiveThreshold(
-                img_blur, 
-                255,  # Max value
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                cv2.THRESH_BINARY,  # Output is black or white
-                25,  # Block size for analysis (larger = more robust to local variations)
-                15   # Constant subtracted from mean (larger = less noise)
+                img_blur,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                25,
+                15
             )
             
             # 3. Noise reduction
-            # Use morphological opening to remove small noise artifacts
-            kernel = np.ones((2,2), np.uint8)
+            kernel = np.ones((2, 2), np.uint8)
             img_clean = cv2.morphologyEx(img_thresh, cv2.MORPH_OPEN, kernel)
             
             # 4. Invert if needed (we want black objects on white background)
-            # Check average color - if mostly black, it's inverted.
             if np.mean(img_clean) < 128:
                 img_clean = cv2.bitwise_not(img_clean)
             
@@ -103,8 +122,38 @@ class DiagramTranslator:
         except Exception as e:
             print(f"  Warning: Advanced image enhancement failed: {e}")
             return pil_image
+
+    def _light_normalize_diagram(self, pil_image):
+        """Light background normalization to keep a plain, clean look.
+
+        This mode flattens the paper background towards white without
+        harsh binarization, preserving diagram lines while reducing noise.
+        """
+        try:
+            gray = np.array(pil_image.convert('L'))
+
+            # Estimate background brightness via a high percentile
+            bg = np.percentile(gray, 90)
+            if bg <= 0:
+                return pil_image
+
+            scale = 255.0 / bg
+            normalized = np.clip(gray * scale, 0, 255).astype(np.uint8)
+
+            # Push near-white pixels to pure white to flatten paper texture
+            result = normalized.copy()
+            result[result > 235] = 255
+
+            # Light denoising
+            result = cv2.medianBlur(result, 3)
+
+            return Image.fromarray(result)
+
+        except Exception as e:
+            print(f"  Warning: Light normalization failed: {e}")
+            return pil_image
     
-    def extract_and_translate_diagram(self, image_path, diagram_region, translator, output_path=None):
+    def extract_and_translate_diagram(self, image_path, diagram_region, translator, output_path=None, book_context=None):
         """
         Extract a diagram region, translate its text labels, and create translated version
         
@@ -113,6 +162,7 @@ class DiagramTranslator:
             diagram_region: Dict with 'x', 'y', 'w', 'h' defining the diagram area
             translator: Translator instance with translate_text method
             output_path: Optional path to save translated diagram
+            book_context: Optional global context about the book
         
         Returns:
             PIL Image with translated labels
@@ -140,12 +190,19 @@ class DiagramTranslator:
                 return diagram
             
             print(f"  Found {len(text_boxes)} text elements in diagram")
-            
-            # Use inpainting to remove original text cleanly
-            overlay_image = self._inpaint_text_regions(diagram, text_boxes)
-            
-            # Enhance quality (whitening background)
-            overlay_image = self._enhance_diagram_quality(overlay_image)
+
+            # Decide how aggressively to process the diagram background
+            if self.processing_mode == "raw":
+                # No background work: keep original crop, just draw translated labels
+                overlay_image = diagram.copy()
+            elif self.processing_mode == "light":
+                # Fill text areas with white and lightly normalize background
+                cleaned = self._inpaint_text_regions(diagram, text_boxes, fill_with_white=True)
+                overlay_image = self._light_normalize_diagram(cleaned)
+            else:
+                # Enhanced mode: inpaint then strong thresholding
+                cleaned = self._inpaint_text_regions(diagram, text_boxes)
+                overlay_image = self._enhance_diagram_quality(cleaned)
             
             draw = ImageDraw.Draw(overlay_image)
             
@@ -154,20 +211,47 @@ class DiagramTranslator:
             for box in text_boxes:
                 japanese_text = box['text'].strip()
                 
-                if not japanese_text or len(japanese_text) < 2:
+                # Allow single characters (like A, B, P, V) if they are alphanumeric
+                if not japanese_text:
                     continue
                 
+                # Filter out long text blocks (likely paragraphs that shouldn't be in diagram labels)
+                # If text is very long (> 50 chars) or has multiple lines, it might be a paragraph
+                if len(japanese_text) > 50 or japanese_text.count('\n') > 2:
+                    print(f"    Skipping long text block in diagram: {japanese_text[:30]}...")
+                    continue
+
                 # Translate the text
                 try:
-                    english_text = translator.translate_text(
-                        japanese_text,
-                        context="technical diagram label",
-                        source_lang='ja',
-                        target_lang='en'
-                    )
+                    # Skip translation for single latin characters/numbers to preserve them exactly
+                    if len(japanese_text) == 1 and japanese_text.isalnum():
+                        english_text = japanese_text
+                    else:
+                        # Add book context to translation request
+                        trans_context = "technical diagram label"
+                        if book_context:
+                            trans_context = f"{trans_context}. Book Context: {book_context}"
+                            
+                        english_text = translator.translate_text(
+                            japanese_text,
+                            context=trans_context,
+                            source_lang='ja',
+                            target_lang='en'
+                        )
                 except Exception as e:
                     print(f"    Translation failed for '{japanese_text}': {e}")
                     english_text = japanese_text
+                
+                # Filter out empty or whitespace-only translations
+                if not english_text or not english_text.strip():
+                    print(f"    Skipping empty translation for '{japanese_text}'")
+                    continue
+
+                # Filter out overly long English labels which are likely
+                # paragraph fragments rather than true diagram labels.
+                if len(english_text) > 40 or english_text.count(" ") > 4:
+                    print(f"    Skipping long translated label: '{english_text[:60]}'")
+                    continue
                 
                 x, y, w, h = box['x'], box['y'], box['w'], box['h']
                 
@@ -237,7 +321,7 @@ class DiagramTranslator:
                 except:
                     pass
     
-    def process_diagrams(self, image_path, diagram_regions, translator, output_dir):
+    def process_diagrams(self, image_path, diagram_regions, translator, output_dir, book_context=None):
         """
         Process multiple diagram regions and save translated versions
         
@@ -246,6 +330,7 @@ class DiagramTranslator:
             diagram_regions: List of diagram region dicts
             translator: Translator instance
             output_dir: Directory to save translated diagrams
+            book_context: Optional global context about the book
         
         Returns:
             List of paths to translated diagram images
@@ -266,7 +351,8 @@ class DiagramTranslator:
                     image_path,
                     region,
                     translator,
-                    output_path
+                    output_path,
+                    book_context=book_context
                 )
                 
                 # Store path and position info

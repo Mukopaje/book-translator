@@ -24,17 +24,19 @@ from diagram_translator import DiagramTranslator
 class BookTranslator:
     """Main orchestrator for the book translation pipeline"""
     
-    def __init__(self, image_path: str, output_dir: str = "output"):
+    def __init__(self, image_path: str, output_dir: str = "output", book_context: str = None):
         """
         Initialize the book translator
         
         Args:
             image_path: Path to the input image
             output_dir: Directory for output files
+            book_context: Optional global context about the book (e.g. "4-stroke engine manual")
         """
         self.image_path = image_path
         self.output_dir = output_dir
         self.page_name = Path(image_path).stem
+        self.book_context = book_context
         
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
@@ -98,9 +100,15 @@ class BookTranslator:
             # Step 3: Translation
             if verbose:
                 print(f"\n[3/6] Translating to English...")
+            
+            # Combine global book context with page context
+            translation_context = "technical manual"
+            if self.book_context:
+                translation_context = f"{translation_context}. Book Context: {self.book_context}"
+                
             english_text = self.translator.translate_text(
                 japanese_text,
-                context="technical manual"
+                context=translation_context
             )
             results['steps']['translation'] = {
                 'success': True,
@@ -151,13 +159,16 @@ class BookTranslator:
                 if diagram_regions:
                     if verbose:
                         print(f"\n[4b/6] Translating diagram labels...")
-                    diagram_translator = DiagramTranslator()
+                    # Use enhanced processing mode for crisp diagrams with
+                    # a clean white background.
+                    diagram_translator = DiagramTranslator(processing_mode="enhanced")
                     diagram_output_dir = f"{self.output_dir}/diagrams"
                     translated_diagrams = diagram_translator.process_diagrams(
                         self.image_path,
                         diagram_regions,
                         self.translator,
-                        diagram_output_dir
+                        diagram_output_dir,
+                        book_context=self.book_context
                     )
                     if verbose:
                         print(f"  + Translated {len(translated_diagrams)} diagram(s)")
@@ -168,7 +179,8 @@ class BookTranslator:
                     pdf_path, 
                     translator=self.translator,
                     full_page_japanese=japanese_text,  # Use the full extracted text
-                    translated_diagrams=translated_diagrams  # Pass translated diagrams
+                    translated_diagrams=translated_diagrams,  # Pass translated diagrams
+                    book_context=self.book_context
                 )
                 
                 results['steps']['pdf_creation'] = {

@@ -55,8 +55,8 @@ class SmartLayoutReconstructor:
         
         for i, box in enumerate(sorted_boxes):
             # Criteria 1: Width
-            # If text is wide (e.g. > 20% of page), it's likely a sentence/paragraph line
-            if box['w'] > page_width * 0.2:
+            # If text is wide (e.g. > 30% of page), it's likely a sentence/paragraph line
+            if box['w'] > page_width * 0.3:
                 paragraph_boxes.append(box)
                 continue
                 
@@ -122,15 +122,17 @@ class SmartLayoutReconstructor:
                 
                 # Add gap section (likely diagram)
                 # Expand region slightly to avoid cutting
-                # Increased padding to 60px to ensure full diagram capture
-                diag_start = max(0, last_bottom - 60)
-                diag_end = min(self.height, box_top + 60)
+                # Increased padding to 100px to ensure full diagram capture (especially bottom labels)
+                diag_start = max(0, last_bottom - 100)
+                diag_end = min(self.height, box_top + 100)
                 
                 page_sections.append({
                     'type': 'diagram',
                     'y_start': diag_start,
                     'y_end': diag_end,
-                    'height': diag_end - diag_start
+                    'height': diag_end - diag_start,
+                    'x': 0,
+                    'w': self.width
                 })
                 
                 current_section_boxes = [box]
@@ -139,7 +141,7 @@ class SmartLayoutReconstructor:
             
             last_bottom = max(last_bottom, box['y'] + box['h'])
         
-        # Add final section
+        # Add final text section, if any
         if current_section_boxes:
             page_sections.append({
                 'type': 'text',
@@ -147,6 +149,75 @@ class SmartLayoutReconstructor:
                 'y_start': current_section_boxes[0]['y'],
                 'y_end': last_bottom
             })
+        
+        # If there's a large gap at the bottom of the page after the last text,
+        # treat it as a potential diagram region as well.
+        remaining_gap = self.height - last_bottom
+        if remaining_gap > gap_threshold:
+            diag_start = max(0, last_bottom - 100)
+            diag_end = self.height
+            page_sections.append({
+                'type': 'diagram',
+                'y_start': diag_start,
+                'y_end': diag_end,
+                'height': diag_end - diag_start,
+                'x': 0,
+                'w': self.width
+            })
+        
+        # Refine diagram sections using all OCR boxes to avoid truncation and
+        # give extra space at the bottom of figures.
+        if page_sections:
+            paragraph_box_ids = set(id(b) for b in filtered_boxes)
+            for section in page_sections:
+                if section['type'] != 'diagram':
+                    continue
+
+                y0 = section['y_start']
+                y1 = section['y_end']
+
+                # Use all boxes intersecting this vertical band to estimate content bounds
+                boxes_in_band = [
+                    b for b in text_boxes
+                    if (b['y'] + b['h'] > y0) and (b['y'] < y1)
+                ]
+
+                if not boxes_in_band:
+                    # Ensure defaults for horizontal span
+                    section.setdefault('x', 0)
+                    section.setdefault('w', self.width)
+                    continue
+
+                content_top = min(b['y'] for b in boxes_in_band)
+                content_bottom = max(b['y'] + b['h'] for b in boxes_in_band)
+
+                top_pad = 60
+                bottom_pad = 140  # extra bottom room to avoid truncating shapes
+
+                refined_y_start = max(0, content_top - top_pad)
+                refined_y_end = min(self.height, content_bottom + bottom_pad)
+
+                section['y_start'] = refined_y_start
+                section['y_end'] = refined_y_end
+                section['height'] = refined_y_end - refined_y_start
+
+                # Now tighten horizontal span around non-paragraph (likely diagram) boxes
+                label_boxes = [
+                    b for b in boxes_in_band
+                    if id(b) not in paragraph_box_ids and b.get('text', '').strip()
+                ]
+
+                if label_boxes:
+                    min_x = min(b['x'] for b in label_boxes)
+                    max_x = max(b['x'] + b['w'] for b in label_boxes)
+                    pad_x = 40
+                    new_x = max(0, min_x - pad_x)
+                    new_right = min(self.width, max_x + pad_x)
+                    section['x'] = new_x
+                    section['w'] = max(0, new_right - new_x)
+                else:
+                    section.setdefault('x', 0)
+                    section.setdefault('w', self.width)
         
         # Group text sections into paragraphs
         paragraphs = []
@@ -164,9 +235,9 @@ class SmartLayoutReconstructor:
         for section in page_sections:
             if section['type'] == 'diagram':
                 diagram_regions.append({
-                    'x': 0,
+                    'x': section.get('x', 0),
                     'y': section['y_start'],
-                    'w': self.width,
+                    'w': section.get('w', self.width),
                     'h': section['height'],
                     'position_in_flow': section['y_start']
                 })
@@ -269,7 +340,7 @@ class SmartLayoutReconstructor:
         
         return translations
     
-    def reconstruct_pdf(self, text_boxes, output_path, translator=None, full_page_japanese=None, translated_diagrams=None):
+    def reconstruct_pdf(self, text_boxes, output_path, translator=None, full_page_japanese=None, translated_diagrams=None, book_context=None):
         """
         Intelligently reconstruct the PDF with proper layout
         If translator and full_page_japanese provided, translates entire page with full context
@@ -277,6 +348,7 @@ class SmartLayoutReconstructor:
         
         Args:
             translated_diagrams: List of dicts with 'image' (PIL Image) and 'region' (position info)
+            book_context: Optional global context about the book
         """
         print(f"Analyzing document layout structure...")
         
@@ -292,10 +364,15 @@ class SmartLayoutReconstructor:
             print(f"  Translating full page text with complete context...")
             print(f"  Japanese text: {len(full_page_japanese)} characters")
             
+            # Add book context to translation request
+            trans_context = "technical manual - preserve paragraph breaks and structure"
+            if book_context:
+                trans_context = f"{trans_context}. Book Context: {book_context}"
+            
             try:
                 full_translation = translator.translate_text(
                     full_page_japanese,
-                    context="technical manual - preserve paragraph breaks and structure",
+                    context=trans_context,
                     source_lang='ja',
                     target_lang='en'
                 )

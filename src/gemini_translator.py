@@ -85,8 +85,16 @@ class GeminiTranslator:
         
         context_instruction = ""
         if context and "technical" in context.lower():
-            context_instruction = """
-This is from a technical manual. Important guidelines:
+            # Extract book context if present
+            book_context_str = ""
+            if "Book Context:" in context:
+                parts = context.split("Book Context:")
+                if len(parts) > 1:
+                    book_context_str = f"\nBOOK CONTEXT: {parts[1].strip()}\nUse this context to ensure correct technical terminology (e.g. 'Stroke' vs 'Process')."
+
+            context_instruction = f"""
+This is from a technical manual. {book_context_str}
+Important guidelines:
 - Preserve technical terminology accurately
 - Maintain numbered sections and figure references (e.g., "Figure 2-3", "(C)", "(D)")
 - Keep measurement units and values exact
