@@ -1,0 +1,90 @@
+=== ORIGINAL (Japanese) ===
+()
+29-
+(3) 2サイクル機関の作動概要
+エンジンには2サイクル機関及び4サイクル機関があり、両者の作動状態は
+大きく異っている。 すなわち、 2サイクル機関は、L圧縮 膨張の2行程
+の動作が繰返され、ピストンが1往復するごとに燃料の爆発膨脹が行なわれる
+もので、クランク軸が1回転ごとに仕事行程となって力が伝達される。その構
+造は2-5図のように吸気弁、排気弁を設けず、シリンダの下部、(ピストン行
+程の下死点附近)に吸気孔及び排気孔を設け、ピストンが弁の作用を兼ねて吸
+気及び排気作用を行なっており、作用の概要は次のとおりである。
+(A) シリンダ圧縮(ピストン上り行程)が終ると燃料が噴射され、同時に点火
+されるので燃焼が行なわれピストンは押し下げられる。 (燃焼行程又は仕事
+行程)
+-
+(B) ピストンが下降すると、シリンダ下部側面の排気孔が開かれ燃焼ガスが逃
+げる。
+(C) ピストンがクランクの回転で更に下降すると吸気孔を開き、別にポンプで
+送られて来た空気がシリンダ内に進入し、残留している排気ガスをすっかり
+排出掃気するとともに次の上り行程で空気の圧縮が始まる。 このように2サ
+イクル機関は4サイクル機関に比較して爆発行程が2回行なわれるので、 理
+論上では2倍の出力となるはずであるが、 実際には1.5倍程度とされている。
+排気孔
+吸気孔
+D
+排気開
+た
+膨
+脹
+縮
+吸気開
+210
+M
+排気閉
+吸気閑
+XIV
+ANTO 指圧線図
+クランク円
+(圧縮)膨張
+α (排気・吸気)
+8.3
+Am08\ssvav
+[2 - 5 図 2サイクル機関の作動
+AMC
+0.SI
+TI HMⱭ
+4 内燃機関の用語
+a.st
+ACSAⱭ18
+29881
+2.8
+OF
+(1) 圧縮比
+S.T
+08
+圧縮比とは、シリンダ内に吸入された空気、 あるいは混合気が、 どれだけに
+圧縮されたかの割合いを示すもので、ピストンが下死点から上死点まで移動し
+たときの行程容積をAで表わし、ピストンが上死点に達したときピストン頭部
+
+=== TRANSLATION (English) ===
+-29-
+(3) 2-Stroke Engine Operation Overview
+Engines include 2-stroke and 4-stroke engines, and their operating states differ greatly. In other words, in a 2-stroke engine, the two strokes of compression and expansion are repeated, and the fuel explodes and expands every time the piston makes one reciprocation. The crank shaft transmits power with each rotation being a power stroke. As shown in Figure 2-5, the structure does not have intake or exhaust valves. Intake and exhaust ports are provided in the lower part of the cylinder (near the bottom dead center of the piston stroke), and the piston also acts as a valve, performing intake and exhaust operations. The operation overview is as follows:
+
+(A) When cylinder compression (piston upward stroke) is completed, fuel is injected and ignited simultaneously, so combustion occurs and the piston is pushed down (combustion stroke or power stroke).
+
+(B) When the piston descends, the exhaust port on the lower side of the cylinder opens and the combustion gas escapes.
+
+(C) When the piston descends further due to the rotation of the crank, it opens the intake port, and the air sent by a separate pump enters the cylinder, completely discharging the remaining exhaust gas, and compression of the air begins in the next upward stroke. In this way, since the explosion stroke of a 2-stroke engine is performed twice compared to a 4-stroke engine, the output should theoretically be twice as high, but in reality, it is said to be about 1.5 times.
+
+Exhaust port
+Intake port
+
+(D)
+Expansion
+Compression
+Intake open
+Exhaust close
+Intake close
+
+Indicated Pressure Diagram
+Crank circle
+α (Exhaust/Intake)
+
+[Figure 2-5: 2-Stroke Engine Operation]
+
+4. Internal Combustion Engine Terminology
+
+(1) Compression Ratio
+The compression ratio indicates how much the air or mixture drawn into the cylinder has been compressed. The stroke volume when the piston moves from bottom dead center to top dead center is represented by A, and the piston head when the piston reaches top dead center

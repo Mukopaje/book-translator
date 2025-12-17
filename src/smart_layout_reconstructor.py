@@ -12,6 +12,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 import os
+import re
 
 
 class SmartLayoutReconstructor:
@@ -350,6 +351,23 @@ class SmartLayoutReconstructor:
             translated_diagrams: List of dicts with 'image' (PIL Image) and 'region' (position info)
             book_context: Optional global context about the book
         """
+        def _is_critical_label(text):
+            """Return True for short, important diagram tokens like A, B, P1, P2, V1, V2.
+
+            Both current English text and original text are checked by the
+            caller. Non-alphanumeric chars are stripped before comparison.
+            """
+            if not text:
+                return False
+            cleaned = re.sub(r"[^A-Za-z0-9]", "", str(text)).lower()
+            if not cleaned:
+                return False
+            return cleaned in {
+                "a", "b", "p", "v",
+                "p1", "p2", "v1", "v2",
+                "pa", "pb", "pc", "va", "vb", "vc"
+            }
+
         print(f"Analyzing document layout structure...")
         
         # Analyze the layout
@@ -411,6 +429,7 @@ class SmartLayoutReconstructor:
         margin_right = pdf_width - 60
         max_text_width = margin_right - margin_left
         current_y = pdf_height - 80
+        at_page_top = True
         
         paragraph_index = 0
         
@@ -427,15 +446,33 @@ class SmartLayoutReconstructor:
                     
                     if not para_text.strip():
                         continue
-                    
-                    # Check for page numbers (e.g., -28-, -13-)
-                    if para_text.strip().startswith('-') and para_text.strip().endswith('-') and len(para_text.strip()) < 10:
-                        # This is likely a page number - center it
-                        text_width = c.stringWidth(para_text.strip(), self.font_name, font_size)
-                        center_x = (pdf_width - text_width) / 2
-                        c.drawString(center_x, current_y, para_text.strip())
-                        current_y -= line_height * 1.5
-                        continue
+
+                    # If we are at the very top of a page, look for a
+                    # leading "-NN-" pattern (e.g., "-28- Text...") and
+                    # treat it as a page header instead of mixing it with the
+                    # paragraph content.
+                    if at_page_top:
+                        m = re.match(r"^\s*-(\d+)-\s*(.*)$", para_text)
+                        if m:
+                            page_num = m.group(1)
+                            remaining = m.group(2).strip()
+
+                            # Render a clean numeric header (e.g., "28")
+                            header_text = page_num
+                            c.setFont(self.font_name, 9)
+                            header_width = c.stringWidth(header_text, self.font_name, 9)
+                            header_y = pdf_height - 40
+                            center_x = (pdf_width - header_width) / 2
+                            c.drawString(center_x, header_y, header_text)
+                            c.setFont(self.font_name, font_size)
+
+                            at_page_top = False
+
+                            # Use remaining text as the actual paragraph
+                            para_text = remaining
+                            if not para_text:
+                                # No more content in this paragraph
+                                continue
                     
                     # Word wrap and render paragraph
                     words = para_text.split()
@@ -459,6 +496,7 @@ class SmartLayoutReconstructor:
                                     c.setFillColor(black)
                                     c.setFont(self.font_name, font_size)
                                     current_y = pdf_height - 80
+                                    at_page_top = True
                             
                             current_line_words = [word]
                     
@@ -468,8 +506,15 @@ class SmartLayoutReconstructor:
                     
                     # Extra space between paragraphs
                     current_y -= line_height * 0.8
+                    at_page_top = False
                     
             elif section['type'] == 'diagram':
+                # Determine if this is a very small inline diagram (e.g. a tiny
+                # PV sketch or formula). For such diagrams we prefer to draw
+                # labels directly and avoid creating a separate Diagram Key.
+                section_height = section.get('height', section['y_end'] - section['y_start'])
+                small_diagram = section_height < self.height * 0.18
+
                 # Find matching translated diagram if available
                 diagram_image = None
                 diagram_annotations = []
@@ -504,6 +549,7 @@ class SmartLayoutReconstructor:
                     c.setFillColor(black)
                     c.setFont(self.font_name, font_size)
                     current_y = pdf_height - 80
+                    at_page_top = True
                 
                 # Scale to fit page width
                 diagram_width = pdf_width - 120  # margins
@@ -545,16 +591,34 @@ class SmartLayoutReconstructor:
                         
                         # Calculate font size
                         note_font_size = max(6, min(int(orig_h * 0.6 * scale), 10))
-                        
-                        # Check if label is too small or text is too long for the box
-                        # If so, add to legend instead of overlaying
-                        text_width = c.stringWidth(note['text'], self.font_name, note_font_size)
+
+                        # Auto-hybrid decision: short labels go directly on the
+                        # diagram, longer ones use markers + Diagram Key.
+                        text = note['text']
+                        original_text = note.get('original', '')
+                        is_critical = _is_critical_label(text) or _is_critical_label(original_text)
+                        text_width = c.stringWidth(text, self.font_name, note_font_size)
                         box_width_pdf = orig_w * scale
-                        
-                        if note_font_size < 7 or text_width > box_width_pdf * 1.5:
+
+                        # Treat very short labels (<= 10 chars, <= 2 words) as
+                        # safe to draw directly if they roughly fit the box.
+                        num_words = len(text.split())
+                        is_short = len(text) <= 10 and num_words <= 2
+
+                        use_marker = False
+                        # Never use markers for critical tokens (A, B, P1, P2,
+                        # etc.) or for very small inline diagrams; always draw
+                        # them directly on the figure.
+                        if not is_critical and not small_diagram:
+                            if note_font_size < 7:
+                                use_marker = True
+                            elif not is_short and text_width > box_width_pdf * 1.3:
+                                use_marker = True
+
+                        if use_marker:
                             # Create a marker (e.g., [1], [A])
                             marker = f"[{len(legend_items) + 1}]"
-                            legend_items.append(f"{marker} {note['text']}")
+                            legend_items.append(f"{marker} {text}")
                             
                             # Draw marker on diagram
                             c.setFont(self.font_name, 8)
@@ -565,15 +629,19 @@ class SmartLayoutReconstructor:
                             # Draw text normally
                             c.setFont(self.font_name, note_font_size)
                             c.setFillColor(black)
-                            c.drawString(pdf_x + (box_width_pdf - text_width)/2, pdf_y, note['text'])
+                            c.drawString(pdf_x + (box_width_pdf - text_width)/2, pdf_y, text)
                     
                     # Reset font
                     c.setFont(self.font_name, font_size)
                 
                 current_y -= diagram_height_scaled + line_height
+                at_page_top = False
                 
                 # Draw Legend if needed
-                if legend_items:
+                # For very small inline diagrams we suppress a separate
+                # Diagram Key block to avoid cluttering the page with extra
+                # legends for tiny sketches.
+                if legend_items and not small_diagram:
                     c.setFont(self.font_name, 9)
                     current_y -= 10
                     c.drawString(60, current_y, "Diagram Key:")
@@ -596,6 +664,7 @@ class SmartLayoutReconstructor:
                             c.setFillColor(black)
                             c.setFont(self.font_name, 9)
                             current_y = pdf_height - 80
+                            at_page_top = True
                     
                     current_y -= line_height
         

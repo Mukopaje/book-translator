@@ -86,6 +86,59 @@ class DiagramTranslator:
         except Exception as e:
             print(f"  Warning: Inpainting failed ({e}), returning original")
             return pil_image
+
+    def _cluster_text_boxes(self, text_boxes, line_tol=8, gap_tol=10):
+        """Cluster raw OCR boxes into logical labels.
+
+        Many OCR engines return one box per character. This groups nearby
+        boxes on the same line into a single label box with concatenated text.
+        """
+        if not text_boxes:
+            return []
+
+        # Sort top-to-bottom, then left-to-right
+        boxes = sorted(text_boxes, key=lambda b: (b['y'], b['x']))
+
+        clusters = []
+        current = None
+
+        for b in boxes:
+            if current is None:
+                current = {
+                    'x': b['x'],
+                    'y': b['y'],
+                    'w': b['w'],
+                    'h': b['h'],
+                    'text': b.get('text', '')
+                }
+                continue
+
+            # Check if b is on approximately the same line as current
+            same_line = abs(b['y'] - current['y']) <= line_tol
+            # Horizontal gap from current right edge to new box left
+            current_right = current['x'] + current['w']
+            gap = b['x'] - current_right
+
+            if same_line and gap >= 0 and gap <= gap_tol:
+                # Merge into current cluster
+                new_right = max(current_right, b['x'] + b['w'])
+                current['w'] = new_right - current['x']
+                current['h'] = max(current['h'], b['h'])
+                current['text'] = (current.get('text', '') + b.get('text', '')).strip()
+            else:
+                clusters.append(current)
+                current = {
+                    'x': b['x'],
+                    'y': b['y'],
+                    'w': b['w'],
+                    'h': b['h'],
+                    'text': b.get('text', '')
+                }
+
+        if current is not None:
+            clusters.append(current)
+
+        return clusters
     
     def _enhance_diagram_quality(self, pil_image):
         """Enhance diagram with stronger background removal.
@@ -116,6 +169,27 @@ class DiagramTranslator:
             # 4. Invert if needed (we want black objects on white background)
             if np.mean(img_clean) < 128:
                 img_clean = cv2.bitwise_not(img_clean)
+
+            # 5. Remove tiny isolated specks using connected components.
+            # This keeps real diagram lines while cleaning random dots.
+            try:
+                # Ensure binary image (0 or 255)
+                _, binary = cv2.threshold(img_clean, 200, 255, cv2.THRESH_BINARY)
+
+                # Work on inverted image so foreground (ink) is 255
+                inv = cv2.bitwise_not(binary)
+                num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
+
+                min_area = 25  # pixels; tweakable threshold
+                for label in range(1, num_labels):  # skip background label 0
+                    area = stats[label, cv2.CC_STAT_AREA]
+                    if area < min_area:
+                        inv[labels == label] = 0  # remove small speck
+
+                # Invert back to black ink on white
+                img_clean = cv2.bitwise_not(inv)
+            except Exception as cc_e:
+                print(f"  Warning: speckle removal failed: {cc_e}")
             
             return Image.fromarray(img_clean)
             
@@ -183,7 +257,10 @@ class DiagramTranslator:
         try:
             # Run OCR on diagram to find text labels
             ocr_result = self.ocr.extract_text_with_boxes(temp_path)
-            text_boxes = ocr_result.get('text_boxes', [])
+            raw_boxes = ocr_result.get('text_boxes', [])
+
+            # Cluster char-level boxes into logical labels
+            text_boxes = self._cluster_text_boxes(raw_boxes)
             
             if not text_boxes:
                 print(f"  No text found in diagram region")
@@ -204,8 +281,6 @@ class DiagramTranslator:
                 cleaned = self._inpaint_text_regions(diagram, text_boxes)
                 overlay_image = self._enhance_diagram_quality(cleaned)
             
-            draw = ImageDraw.Draw(overlay_image)
-            
             # Process each text box
             text_annotations = []
             for box in text_boxes:
@@ -223,8 +298,9 @@ class DiagramTranslator:
 
                 # Translate the text
                 try:
-                    # Skip translation for single latin characters/numbers to preserve them exactly
-                    if len(japanese_text) == 1 and japanese_text.isalnum():
+                    # Preserve short ASCII labels (e.g., A, B, P1, V2) exactly
+                    # so they are never distorted by translation.
+                    if japanese_text.isascii() and len(japanese_text) <= 3 and any(ch.isalnum() for ch in japanese_text):
                         english_text = japanese_text
                     else:
                         # Add book context to translation request
@@ -247,6 +323,30 @@ class DiagramTranslator:
                     print(f"    Skipping empty translation for '{japanese_text}'")
                     continue
 
+                # Normalize whitespace
+                english_text = english_text.strip()
+
+                # Skip labels that have no alphanumeric characters at all
+                # (e.g., pure symbols like □, ●, punctuation-only marks).
+                if not any(ch.isalnum() for ch in english_text):
+                    print(f"    Skipping non-alphanumeric label: '{english_text}'")
+                    continue
+
+                # Drop common partial-sentence fragments that tend to leak
+                # from surrounding text into diagrams.
+                tokens = english_text.lower().split()
+                if len(tokens) == 1 and tokens[0] in {"more", "other", "others", "following"}:
+                    print(f"    Skipping low-information label: '{english_text}'")
+                    continue
+
+                lower_text = english_text.lower()
+                if "referred to as" in lower_text:
+                    print(f"    Skipping fragment label containing 'referred to as': '{english_text}'")
+                    continue
+                if len(tokens) >= 2 and tokens[0] in {"referred", "called"} and tokens[1] in {"to", "as"}:
+                    print(f"    Skipping fragment label starting with '{tokens[0]} {tokens[1]}': '{english_text}'")
+                    continue
+
                 # Filter out overly long English labels which are likely
                 # paragraph fragments rather than true diagram labels.
                 if len(english_text) > 40 or english_text.count(" ") > 4:
@@ -254,8 +354,27 @@ class DiagramTranslator:
                     continue
                 
                 x, y, w, h = box['x'], box['y'], box['w'], box['h']
+
+                # Additional guard: labels that end up near the very bottom of
+                # the diagram area and are still relatively long are often
+                # fragments of body text that slipped into the crop. If a box
+                # is in the bottom 20% of the diagram height, only keep it if
+                # it looks like a short label.
+                center_y = y + h / 2.0
+                try:
+                    diag_height = diagram.height
+                except Exception:
+                    diag_height = None
+
+                if diag_height and center_y > diag_height * 0.8:
+                    if len(english_text) > 15 or len(tokens) > 2:
+                        print(f"    Skipping bottom-region text '{english_text}' as likely body text")
+                        continue
                 
-                # Store annotation for vector rendering later
+                # Store annotation for vector rendering later (PDF overlay).
+                # We deliberately do NOT draw text directly onto the diagram
+                # image here to avoid double-rendering (raster + PDF vector),
+                # which created a "shadow" effect in the final output.
                 text_annotations.append({
                     'text': english_text,
                     'x': x,
@@ -264,45 +383,6 @@ class DiagramTranslator:
                     'h': h,
                     'original': japanese_text
                 })
-                
-                # Determine font size based on original text height
-                font_size = max(10, min(int(h * 0.8), 16))
-                
-                try:
-                    if self.font_path and os.path.exists(self.font_path):
-                        font = ImageFont.truetype(self.font_path, font_size)
-                    else:
-                        font = ImageFont.load_default()
-                except:
-                    font = ImageFont.load_default()
-                
-                # Calculate text size
-                try:
-                    text_bbox = draw.textbbox((0, 0), english_text, font=font)
-                    text_width = text_bbox[2] - text_bbox[0]
-                    text_height = text_bbox[3] - text_bbox[1]
-                except:
-                    # Fallback for older Pillow
-                    text_width = len(english_text) * font_size * 0.5
-                    text_height = font_size
-                
-                # Center text in the original box
-                text_x = x + (w - text_width) // 2
-                text_y = y + (h - text_height) // 2
-                
-                # Draw text with white outline for visibility (since we removed the white box)
-                outline_color = "white"
-                text_color = "black"
-                stroke_width = 2
-                
-                # Draw outline
-                for adj_x in range(-stroke_width, stroke_width+1):
-                    for adj_y in range(-stroke_width, stroke_width+1):
-                        draw.text((text_x+adj_x, text_y+adj_y), english_text, font=font, fill=outline_color)
-                
-                # Draw main text
-                draw.text((text_x, text_y), english_text, fill=text_color, font=font)
-                
                 print(f"    '{japanese_text}' → '{english_text}'")
             
             # Save translated diagram
