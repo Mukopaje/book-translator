@@ -11,6 +11,9 @@ from reportlab.lib.colors import black
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import Table, TableStyle, Paragraph
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 import os
 import re
 
@@ -32,13 +35,28 @@ class SmartLayoutReconstructor:
         # Setup font
         try:
             font_path = "C:/Windows/Fonts/arial.ttf"
-            if os.path.exists(font_path):
+            font_path_bold = "C:/Windows/Fonts/arialbd.ttf"
+            if os.path.exists(font_path) and os.path.exists(font_path_bold):
                 pdfmetrics.registerFont(TTFont('Arial', font_path))
+                pdfmetrics.registerFont(TTFont('Arial-Bold', font_path_bold))
                 self.font_name = 'Arial'
+                self.font_name_bold = 'Arial-Bold'
             else:
                 self.font_name = 'Helvetica'
+                self.font_name_bold = 'Helvetica-Bold'
         except:
             self.font_name = 'Helvetica'
+            self.font_name_bold = 'Helvetica-Bold'
+
+        # PDF settings
+        self.page_width, self.page_height = A4
+        self.margin_left = 60
+        self.margin_right = 60
+        self.margin_top = 80
+        self.margin_bottom = 80
+        self.font_size = 11
+        self.line_height = self.font_size * 1.5
+        self.canvas = None
     
     def _filter_paragraph_boxes(self, text_boxes):
         """
@@ -341,7 +359,7 @@ class SmartLayoutReconstructor:
         
         return translations
     
-    def reconstruct_pdf(self, text_boxes, output_path, translator=None, full_page_japanese=None, translated_diagrams=None, book_context=None):
+    def reconstruct_pdf(self, text_boxes, output_path, translator=None, full_page_japanese=None, translated_diagrams=None, book_context=None, table_artifacts=None, chart_artifacts=None, render_capture=None):
         """
         Intelligently reconstruct the PDF with proper layout
         If translator and full_page_japanese provided, translates entire page with full context
@@ -378,10 +396,54 @@ class SmartLayoutReconstructor:
         print(f"  Total sections: {len(layout['page_sections'])}")
         
         # Better approach: Translate the entire page text with full context (like OpenAI approach)
+        page_number = None
         if translator and full_page_japanese:
             print(f"  Translating full page text with complete context...")
             print(f"  Japanese text: {len(full_page_japanese)} characters")
-            
+
+            lines = full_page_japanese.split('\n')
+
+            # Pass 1: Find the page number line and mark its index
+            page_number_line_idx = None
+            for idx, line in enumerate(lines[:10]):  # Check first 10 lines only
+                # Prefer canonical "-NN-" style (like -29-)
+                m = re.match(r"^\s*-(\d{1,4})-\s*$", line)
+                if m:
+                    page_number = m.group(1)
+                    page_number_line_idx = idx
+                    break
+                # Also match "NN-" format (like 29-)
+                m = re.match(r"^\s*(\d{1,4})-\s*$", line)
+                if m:
+                    page_number = m.group(1)
+                    page_number_line_idx = idx
+                    break
+
+            # Pass 2: If no -NN- found, try bare number near top
+            if page_number is None:
+                non_empty_count = 0
+                for idx, line in enumerate(lines[:10]):  # Check first 10 lines only
+                    stripped = line.strip()
+                    if stripped and stripped not in ['()', '( )', '[]', '[ ]']:  # Skip noise
+                        non_empty_count += 1
+                        m = re.match(r"^\s*(\d{1,4})\s*$", line)
+                        if m and non_empty_count <= 3:
+                            page_number = m.group(1)
+                            page_number_line_idx = idx
+                            break
+
+            # Pass 3: Build cleaned lines, skipping the page-number line and initial noise
+            cleaned_lines = []
+            for idx, line in enumerate(lines):
+                if idx == page_number_line_idx:
+                    continue
+                # Skip empty lines or noise symbols at the very start
+                if idx < 3 and line.strip() in ['()', '( )', '[]', '[ ]', '']:
+                    continue
+                cleaned_lines.append(line)
+
+            cleaned_japanese = "\n".join(cleaned_lines)
+
             # Add book context to translation request
             trans_context = "technical manual - preserve paragraph breaks and structure"
             if book_context:
@@ -389,7 +451,7 @@ class SmartLayoutReconstructor:
             
             try:
                 full_translation = translator.translate_text(
-                    full_page_japanese,
+                    cleaned_japanese,
                     context=trans_context,
                     source_lang='ja',
                     target_lang='en'
@@ -414,6 +476,7 @@ class SmartLayoutReconstructor:
         # Create PDF
         pdf_width, pdf_height = A4
         c = canvas.Canvas(output_path, pagesize=A4)
+        self.canvas = c
         
         # White background
         c.setFillColorRGB(1, 1, 1)
@@ -433,9 +496,120 @@ class SmartLayoutReconstructor:
         
         paragraph_index = 0
         
+        # Helpers to render artifacts
+        def _render_table(table_artifact):
+            nonlocal current_y
+            rows = table_artifact.rows
+            cols = table_artifact.cols
+            cells = table_artifact.cells
+            
+            if not cells:
+                return
+
+            # Prepare data in a list of lists format for ReportLab Table
+            data = [["" for _ in range(cols)] for _ in range(rows)]
+            span_commands = []
+            
+            # Use a style for paragraphs to allow for text wrapping
+            styles = getSampleStyleSheet()
+            style = styles['Normal']
+            style.fontName = self.font_name
+            style.fontSize = 8
+            style.leading = 10
+
+            for cell in cells:
+                r, c_idx = cell.row, cell.col
+                text = cell.translation or cell.text or ""
+                # Wrap cell content in a Paragraph object
+                data[r][c_idx] = Paragraph(text.replace('\\n', '<br/>'), style)
+                
+                # Handle spans if they exist (though our current detector doesn't find them)
+                row_span = getattr(cell, 'row_span', 1)
+                col_span = getattr(cell, 'col_span', 1)
+                if row_span > 1 or col_span > 1:
+                    span_commands.append(('SPAN', (c_idx, r), (c_idx + col_span - 1, r + row_span - 1)))
+
+            # Create the ReportLab table object
+            # Set available width for the table (page width - margins)
+            available_width = self.page_width - self.margin_left - self.margin_right
+            
+            # Create table and apply styles
+            table = Table(data, repeatRows=1)
+            
+            # Professional styling
+            style = TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#E0E0E0")), # Header background
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('FONTNAME', (0, 0), (-1, 0), self.font_name_bold), # Header font
+                ('FONTNAME', (0, 1), (-1, -1), self.font_name), # Body font
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+                ('TOPPADDING', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
+                ('TOPPADDING', (0, 1), (-1, -1), 6),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.black) # Grid lines
+            ])
+            table.setStyle(style)
+            
+            # Add span commands if any
+            if span_commands:
+                for cmd in span_commands:
+                    table.setStyle(TableStyle([cmd]))
+
+            # Calculate the required height of the table on the page
+            w, h = table.wrapOn(self.canvas, available_width, self.page_height)
+
+            # If there's not enough space, start a new page
+            if current_y - h < self.margin_bottom:
+                self.canvas.showPage()
+                self.canvas.setFont(self.font_name, self.font_size)
+                current_y = self.page_height - self.margin_top
+
+            # Draw the table on the canvas
+            table.drawOn(self.canvas, self.margin_left, current_y - h)
+            
+            # Update the current y-position
+            current_y -= (h + self.line_height)
+
+        def _render_chart_placeholder(artifact):
+            nonlocal current_y, at_page_top
+            # Draw a labeled box placeholder for chart
+            box_h = 120
+            if current_y - (box_h + 20) < 80:
+                c.showPage(); c.setFillColorRGB(1,1,1); c.rect(0,0,pdf_width,pdf_height,fill=1,stroke=0)
+                c.setFillColor(black); c.setFont(self.font_name, font_size); current_y = pdf_height - 80; at_page_top = True
+            # Title
+            c.setFont(self.font_name, 10)
+            c.drawString(margin_left, current_y, "Chart")
+            current_y -= 16
+            # Box
+            c.rect(margin_left, current_y - box_h, max_text_width, box_h, stroke=1, fill=0)
+            c.setFont(self.font_name, 8)
+            c.drawString(margin_left + 6, current_y - 14, "Chart artifact placeholder (spec not rendered)")
+            current_y -= (box_h + line_height)
+            at_page_top = False
+
+        # Prepare artifact lists
+        table_queue = list(table_artifacts or [])
+        chart_queue = list(chart_artifacts or [])
+
         # Process each section in order
         for section in layout['page_sections']:
             if section['type'] == 'text':
+                # If we're at the start of a PDF page and we captured an
+                # original page number from the Japanese text, render it as a
+                # centered header (e.g., "28") above the content.
+                if at_page_top and page_number is not None:
+                    header_text = page_number
+                    c.setFont(self.font_name, 9)
+                    header_width = c.stringWidth(header_text, self.font_name, 9)
+                    header_y = pdf_height - 40
+                    center_x = (pdf_width - header_width) / 2
+                    c.drawString(center_x, header_y, header_text)
+                    c.setFont(self.font_name, font_size)
+                    at_page_top = False
+
                 # Process text paragraphs
                 for i in range(len(layout['paragraphs'])):
                     if paragraph_index >= len(translated_paragraphs):
@@ -446,33 +620,6 @@ class SmartLayoutReconstructor:
                     
                     if not para_text.strip():
                         continue
-
-                    # If we are at the very top of a page, look for a
-                    # leading "-NN-" pattern (e.g., "-28- Text...") and
-                    # treat it as a page header instead of mixing it with the
-                    # paragraph content.
-                    if at_page_top:
-                        m = re.match(r"^\s*-(\d+)-\s*(.*)$", para_text)
-                        if m:
-                            page_num = m.group(1)
-                            remaining = m.group(2).strip()
-
-                            # Render a clean numeric header (e.g., "28")
-                            header_text = page_num
-                            c.setFont(self.font_name, 9)
-                            header_width = c.stringWidth(header_text, self.font_name, 9)
-                            header_y = pdf_height - 40
-                            center_x = (pdf_width - header_width) / 2
-                            c.drawString(center_x, header_y, header_text)
-                            c.setFont(self.font_name, font_size)
-
-                            at_page_top = False
-
-                            # Use remaining text as the actual paragraph
-                            para_text = remaining
-                            if not para_text:
-                                # No more content in this paragraph
-                                continue
                     
                     # Word wrap and render paragraph
                     words = para_text.split()
@@ -507,6 +654,12 @@ class SmartLayoutReconstructor:
                     # Extra space between paragraphs
                     current_y -= line_height * 0.8
                     at_page_top = False
+
+                # After a text section, render one table and one chart if available
+                if table_queue:
+                    _render_table(table_queue.pop(0))
+                if chart_queue:
+                    _render_chart_placeholder(chart_queue.pop(0))
                     
             elif section['type'] == 'diagram':
                 # Determine if this is a very small inline diagram (e.g. a tiny
@@ -569,6 +722,7 @@ class SmartLayoutReconstructor:
                 
                 # Draw vector text annotations on top
                 legend_items = []
+                render_log = {'diagram_y': section['y_start'], 'annotations': []}
                 if diagram_annotations:
                     c.setFillColor(black)
                     for note in diagram_annotations:
@@ -606,16 +760,34 @@ class SmartLayoutReconstructor:
                         is_short = len(text) <= 10 and num_words <= 2
 
                         use_marker = False
-                        # Never use markers for critical tokens (A, B, P1, P2,
-                        # etc.) or for very small inline diagrams; always draw
-                        # them directly on the figure.
-                        if not is_critical and not small_diagram:
+
+                        # Labels whose centers are very close to the bottom
+                        # of the diagram tend to belong to the "caption band"
+                        # under the figure. For these we avoid drawing onto
+                        # the image at all and instead send them straight to
+                        # the Diagram Key so the bottom of the figure stays
+                        # clean.
+                        center_ratio = (orig_y + orig_h / 2.0) / float(diagram_image.height)
+                        # Treat the bottom ~25% of the diagram as a
+                        # caption-like band: labels there will not be drawn
+                        # on the image, only listed in the Diagram Key.
+                        in_bottom_band = center_ratio > 0.75
+
+                        # Never use markers for critical tokens (A, B, P1,
+                        # P2, etc.) or for very small inline diagrams; always
+                        # draw them directly on the figure.
+                        if not is_critical and not small_diagram and not in_bottom_band:
                             if note_font_size < 7:
                                 use_marker = True
                             elif not is_short and text_width > box_width_pdf * 1.3:
                                 use_marker = True
 
-                        if use_marker:
+                        if in_bottom_band:
+                            # Caption-like labels: just add to Diagram Key,
+                            # no marker or overprint on the diagram.
+                            legend_items.append(text)
+                            render_log['annotations'].append({'text': text, 'original': original_text, 'mode': 'key'})
+                        elif use_marker:
                             # Create a marker (e.g., [1], [A])
                             marker = f"[{len(legend_items) + 1}]"
                             legend_items.append(f"{marker} {text}")
@@ -625,14 +797,18 @@ class SmartLayoutReconstructor:
                             c.setFillColorRGB(1, 0, 0) # Red for visibility
                             c.drawString(pdf_x + (box_width_pdf - c.stringWidth(marker, self.font_name, 8))/2, pdf_y, marker)
                             c.setFillColor(black)
+                            render_log['annotations'].append({'text': text, 'original': original_text, 'mode': 'marker'})
                         else:
                             # Draw text normally
                             c.setFont(self.font_name, note_font_size)
                             c.setFillColor(black)
                             c.drawString(pdf_x + (box_width_pdf - text_width)/2, pdf_y, text)
+                            render_log['annotations'].append({'text': text, 'original': original_text, 'mode': 'image'})
                     
                     # Reset font
                     c.setFont(self.font_name, font_size)
+                if render_capture is not None:
+                    render_capture.append(render_log)
                 
                 current_y -= diagram_height_scaled + line_height
                 at_page_top = False
@@ -667,6 +843,12 @@ class SmartLayoutReconstructor:
                             at_page_top = True
                     
                     current_y -= line_height
+
+        # If any remaining artifacts, render them at the end
+        while table_queue:
+            _render_table(table_queue.pop(0))
+        while chart_queue:
+            _render_chart_placeholder(chart_queue.pop(0))
         
         c.save()
         print(f"[OK] Smart layout PDF created: {output_path}")

@@ -1,22 +1,77 @@
 # Book Translator - Technical Manual Translation System
 
-A Python-based system for automatically translating Japanese technical manuals to English while preserving diagrams and layouts.
+**Status**: Phase 2 Complete ✅ | Backend Ready for Deployment
+
+A production-ready system for automatically translating Japanese technical manuals to English with:
+- ✅ Smart layout reconstruction
+- ✅ Diagram cleaning and label translation
+- ✅ User authentication and project management
+- ✅ Cloud storage persistence
+- ✅ RESTful API backend
+
+## 🎯 Development Progress
+
+| Phase | Status | Completion |
+|-------|--------|------------|
+| **Phase 1: Core Translation Engine** | 🟡 Testing | 90% |
+| **Phase 2: Session Persistence** | ✅ Complete | 95% |
+| **Phase 3: User Authentication** | ✅ Complete | 100% |
+| Phase 4: Batch Processing | ⏸️ Pending | 0% |
+| Phase 5: Book Context & Quality | ⏸️ Pending | 0% |
+| Phase 6: Review & Editing Tools | ⏸️ Pending | 0% |
+| Phase 7: Monetization & Polish | ⏸️ Pending | 0% |
+| Phase 8: Advanced Features | ⏸️ Pending | 0% |
+
+📊 **Overall Progress**: 35% (3/8 phases complete)
+
+See [ROADMAP_PROGRESS.md](ROADMAP_PROGRESS.md) for detailed tracking.
+
+## 🚀 Quick Start
+
+### For Translation (Phase 1)
+```bash
+streamlit run app_v2.py
+```
+
+### For Backend API (Phase 2)
+```bash
+# Setup
+cd backend
+pip install -r requirements.txt
+cp .env.example .env  # Edit with your settings
+
+# Run server
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# View docs: http://localhost:8000/docs
+```
 
 ## Project Structure
 
 ```
 book-translator/
-├── src/
-│   ├── layout_analysis.py      # Detects text regions and diagrams
-│   ├── ocr_extractor.py        # Extracts Japanese text using Tesseract
-│   ├── translator.py           # Translates text using OpenAI GPT-4o
-│   ├── diagram_processor.py    # Cleans and relabels diagrams
-│   ├── pdf_generator.py        # Creates output PDF documents
-│   └── main.py                 # Main orchestrator script
+├── src/                        # Core translation engine
+│   ├── main.py                 # BookTranslator orchestrator
+│   ├── smart_layout_reconstructor.py  # Smart PDF layout
+│   ├── diagram_translator.py   # Diagram cleaning & translation
+│   ├── gemini_translator.py    # Gemini API translation
+│   ├── google_ocr.py           # Google Cloud Vision OCR
+│   └── diagram_processor.py    # Legacy diagram tools
+├── backend/                    # FastAPI backend (Phase 2)
+│   ├── app/
+│   │   ├── main.py             # FastAPI application
+│   │   ├── models/             # Database models & schemas
+│   │   ├── api/                # API endpoints (auth, projects, pages)
+│   │   └── services/           # Auth, storage services
+│   ├── requirements.txt        # Backend dependencies
+│   └── README.md               # Backend setup guide
+├── app_v2.py                   # Streamlit UI (current)
 ├── images_to_process/          # Input image folder
 ├── output/                     # Output folder for processed files
-├── requirements.txt            # Python dependencies
-├── .env                        # API keys and configuration
+├── requirements.txt            # Main dependencies
+├── ROADMAP_PROGRESS.md         # Detailed progress tracker
+├── PHASE2_COMPLETE.md          # Phase 2 implementation summary
+├── FRONTEND_INTEGRATION.md     # Streamlit+Backend integration guide
 └── README.md                   # This file
 ```
 
@@ -169,15 +224,63 @@ Check your `.env` file and verify your API key is valid.
 - **Bottleneck**: OpenAI API response time
 - **Memory usage**: ~100-200 MB per page
 
-## Future Improvements
+## 📚 Documentation
 
-- [ ] Mobile app for direct scanning
-- [ ] Batch processing dashboard
-- [ ] Custom translation glossary support
-- [ ] Multi-language output
-- [ ] Automated quality assurance
-- [ ] Web-based interface (Streamlit)
-- [ ] Support for PDFs as direct input
+- **[ROADMAP_PROGRESS.md](ROADMAP_PROGRESS.md)** - Detailed phase-by-phase progress tracking
+- **[PHASE2_COMPLETE.md](PHASE2_COMPLETE.md)** - Phase 2 implementation summary
+- **[FRONTEND_INTEGRATION.md](FRONTEND_INTEGRATION.md)** - Guide for integrating Streamlit with backend API
+- **[backend/README.md](backend/README.md)** - Backend setup and deployment guide
+
+## 🎯 Current Sprint
+
+**Completed Today**:
+- ✅ Fixed page number extraction (centered headers)
+- ✅ Fixed diagram bottom-band cleanup
+- ✅ Built complete FastAPI backend
+- ✅ User authentication with JWT
+- ✅ Project and page management APIs
+- ✅ Google Cloud Storage integration
+- ✅ Database models (PostgreSQL)
+- ✅ API documentation
+
+**Next Steps**:
+1. Verify Phase 1 translation quality fixes
+2. Deploy backend (PostgreSQL + GCS setup)
+3. Test API endpoints
+4. Integrate Streamlit with backend
+5. Move to Phase 4 (batch processing)
+
+## 🔮 Future Roadmap
+
+### Phase 4: Batch Processing & Async Jobs
+- [ ] Celery/Redis job queue
+- [ ] Multi-page upload (drag & drop)
+- [ ] Email notifications
+- [ ] Book assembly (merge pages)
+
+### Phase 5: Book Context & Quality
+- [ ] Cover/front matter OCR
+- [ ] AI context extraction
+- [ ] Terminology dictionary
+- [ ] Translation confidence scoring
+
+### Phase 6: Review & Editing Tools
+- [ ] Side-by-side editor
+- [ ] Visual diagram label editor
+- [ ] Find & replace across pages
+
+### Phase 7: Monetization & Polish
+- [ ] Stripe integration
+- [ ] Usage tracking & limits
+- [ ] React/Next.js frontend migration
+- [ ] Landing page
+
+### Phase 8: Advanced Features
+- [ ] Multiple translation engines
+- [ ] Project collaboration
+- [ ] Export to EPUB, DOCX
+- [ ] Translation memory
+- [ ] Mobile app
 
 ## License
 

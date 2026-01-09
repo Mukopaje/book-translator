@@ -1,0 +1,35 @@
+# FastAPI Backend Requirements
+
+# Core Framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.10.0
+pydantic-settings==2.6.0
+
+# Database
+sqlalchemy==2.0.36
+alembic==1.14.1
+psycopg2-binary==2.9.10
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# Cloud Storage
+google-cloud-storage==2.14.0
+
+# Email
+sendgrid==6.11.0
+
+# Job Queue - Phase 4 Async Processing
+celery==5.3.4
+redis==5.0.1
+flower==2.0.1
+
+# PDF Processing
+PyPDF2==3.0.1
+
+# Utils
+python-dotenv==1.0.0
+requests==2.31.0

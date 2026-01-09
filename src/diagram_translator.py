@@ -340,6 +340,20 @@ class DiagramTranslator:
                     continue
 
                 lower_text = english_text.lower()
+                # Filter out diagnostic or helper phrases coming from other
+                # parts of the pipeline which should never appear as
+                # diagram labels.
+                diagnostic_fragments = [
+                    "(no content to translate)",
+                    "(no text provided)",
+                    "(no text to translate)",
+                    "no translation needed as there is no japanese text provided",
+                    "no translation needed as the japanese text is a single char",
+                ]
+                if any(fragment in lower_text for fragment in diagnostic_fragments):
+                    print(f"    Skipping diagnostic/helper label: '{english_text}'")
+                    continue
+
                 if "referred to as" in lower_text:
                     print(f"    Skipping fragment label containing 'referred to as': '{english_text}'")
                     continue
@@ -355,20 +369,26 @@ class DiagramTranslator:
                 
                 x, y, w, h = box['x'], box['y'], box['w'], box['h']
 
-                # Additional guard: labels that end up near the very bottom of
-                # the diagram area and are still relatively long are often
-                # fragments of body text that slipped into the crop. If a box
-                # is in the bottom 20% of the diagram height, only keep it if
-                # it looks like a short label.
+                # Additional guard: labels that end up very close to the
+                # bottom edge of the diagram are often fragments of the
+                # surrounding body text rather than true diagram labels.
+                # In the bottom band of the diagram height we only allow
+                # extremely short ASCII tokens (like A, B, P1, V2) and drop
+                # everything else.
                 center_y = y + h / 2.0
                 try:
                     diag_height = diagram.height
                 except Exception:
                     diag_height = None
 
-                if diag_height and center_y > diag_height * 0.8:
-                    if len(english_text) > 15 or len(tokens) > 2:
-                        print(f"    Skipping bottom-region text '{english_text}' as likely body text")
+                if diag_height and center_y > diag_height * 0.7:
+                    keep_short_ascii = (
+                        english_text.isascii()
+                        and len(english_text) <= 3
+                        and any(ch.isalnum() for ch in english_text)
+                    )
+                    if not keep_short_ascii:
+                        print(f"    Skipping bottom-edge text '{english_text}' as likely body text")
                         continue
                 
                 # Store annotation for vector rendering later (PDF overlay).

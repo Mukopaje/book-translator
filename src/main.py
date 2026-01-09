@@ -19,6 +19,10 @@ from text_overlay import TextOverlay
 from pdf_reconstructor import PDFPageReconstructor
 from smart_layout_reconstructor import SmartLayoutReconstructor
 from diagram_translator import DiagramTranslator
+from agents.table_agent import TableAgent
+from agents.chart_agent import ChartAgent
+from agents.diagram_agent import DiagramAgent
+from artifacts.schemas import artifacts_to_dict
 
 
 class BookTranslator:
@@ -154,6 +158,43 @@ class BookTranslator:
                 if verbose and diagram_regions:
                     print(f"  + Found {len(diagram_regions)} diagram region(s)")
                 
+                # 4a: Run artifact agents (MVP: stubs return empty for tables/charts)
+                if verbose:
+                    print(f"  + Running artifact agents (tables/charts/diagrams)...")
+                
+                import traceback
+                try:
+                    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+                    import time
+                    
+                    def run_table_detection():
+                        table_agent = TableAgent()
+                        chart_agent = ChartAgent()
+                        tables = table_agent.detect_and_extract(self.image_path, text_boxes, self.translator, self.book_context)
+                        charts = chart_agent.from_tables(tables)
+                        return tables, charts
+                    
+                    # Run with 90 second timeout
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(run_table_detection)
+                        try:
+                            tables, charts = future.result(timeout=90)
+                        except FutureTimeout:
+                            if verbose:
+                                print(f"    ! Table detection timed out (>90s), setting tables and charts to empty lists.")
+                            tables, charts = [], []
+                    if verbose:
+                        print(f"    + Found {len(tables)} tables and {len(charts)} charts.")
+                        
+                except Exception as e:
+                    if verbose:
+                        print(f"    ! Artifact agent error (tables/charts): {e}")
+                        print(f"    ! Full stack trace:\n{traceback.format_exc()}")
+                    tables, charts = [], []
+                
+                if verbose:
+                    print(f"  + Artifact detection finished, moving on to diagram translation...")
+
                 # Step 4b: Translate diagrams if found
                 translated_diagrams = None
                 if diagram_regions:
@@ -173,21 +214,54 @@ class BookTranslator:
                     if verbose:
                         print(f"  + Translated {len(translated_diagrams)} diagram(s)")
                 
+                # Normalize diagram artifacts for downstream use (not yet used in PDF composer)
+                try:
+                    diagram_artifacts = DiagramAgent().from_translated_diagrams(translated_diagrams)
+                except Exception as e:
+                    if verbose:
+                        print(f"    ! Diagram artifact normalization error: {e}")
+                    diagram_artifacts = []
+                
                 # Create the PDF with smart layout (pass full page Japanese text for better translation)
+                diagram_render_capture = []
+                if verbose:
+                    print(f"  + Reconstructing PDF page...")
                 smart_reconstructor.reconstruct_pdf(
                     text_boxes, 
                     pdf_path, 
                     translator=self.translator,
                     full_page_japanese=japanese_text,  # Use the full extracted text
                     translated_diagrams=translated_diagrams,  # Pass translated diagrams
-                    book_context=self.book_context
+                    book_context=self.book_context,
+                    table_artifacts=tables,
+                    chart_artifacts=charts,
+                    render_capture=diagram_render_capture
                 )
+                if verbose:
+                    print(f"  + PDF reconstruction finished.")
                 
                 results['steps']['pdf_creation'] = {
                     'success': True,
                     'output_file': f"{self.page_name}_translated.pdf",
                     'diagrams_translated': len(translated_diagrams) if translated_diagrams else 0
                 }
+                # Record artifact summary for visibility (MVP only).
+                results['steps']['artifacts'] = {
+                    'tables': len(tables),
+                    'charts': len(charts),
+                    'diagrams': len(diagram_artifacts),
+                }
+                # Provide serializable artifact details for persistence
+                try:
+                    results['steps']['artifact_details'] = {
+                        'tables': artifacts_to_dict(tables),
+                        'charts': artifacts_to_dict(charts),
+                        'diagrams': artifacts_to_dict(diagram_artifacts),
+                        'diagram_renderings': diagram_render_capture,
+                    }
+                except Exception as e:
+                    if verbose:
+                        print(f"    ! Artifact serialization error: {e}")
                 if verbose:
                     print(f"  + Smart layout PDF created: {pdf_path}")
 
@@ -261,13 +335,17 @@ class BookTranslator:
                 print(f"Output directory: {self.output_dir}/")
             
             results['success'] = True
-            
+            if verbose:
+                print(f"  + Page processing complete.")
+
         except Exception as e:
             results['success'] = False
             results['error'] = str(e)
             if verbose:
-                print(f"\n[ERROR] {str(e)}")
-        
+                import traceback
+                print(f"\n[ERROR] An unexpected error occurred in page processing: {str(e)}")
+                traceback.print_exc()
+
         return results
 
 
