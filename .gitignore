@@ -42,6 +42,7 @@ Thumbs.db
 # Output files - Generated content (NEVER commit)
 output/
 images_to_process/
+*.pdf
 
 # Logs
 *.log
