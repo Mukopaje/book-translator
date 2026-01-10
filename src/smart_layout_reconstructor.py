@@ -361,68 +361,13 @@ class SmartLayoutReconstructor:
 
                 merged_sections.append(curr)
         
-        # Clean up diagram bounds: ensure they don't overwrite text
-        # (Though current logic is strict start/end, merging can overlap)
-        # Refine diagram sections using all OCR boxes to avoid truncation and
-        # give extra space at the bottom of figures.
-        if merged_sections:
-            paragraph_box_ids = set(id(b) for b in filtered_boxes)
-            for section in merged_sections:
-                if section['type'] != 'diagram':
-                    continue
+        page_sections = merged_sections
 
-                y0 = section['y_start']
-                y1 = section['y_end']
-
-                # Use all boxes intersecting this vertical band to estimate content bounds
-                boxes_in_band = [
-                    b for b in text_boxes
-                    if (b['y'] + b['h'] > y0) and (b['y'] < y1)
-                ]
-
-                if not boxes_in_band:
-                    # Ensure defaults for horizontal span
-                    section.setdefault('x', 0)
-                    section.setdefault('w', self.width)
-                    continue
-
-                content_top = min(b['y'] for b in boxes_in_band)
-                content_bottom = max(b['y'] + b['h'] for b in boxes_in_band)
-
-                top_pad = 60
-                bottom_pad = 200  # INCREASED from 140 to 200 to avoid truncation (Page 41 fix)
-
-                refined_y_start = max(0, content_top - top_pad)
-                refined_y_end = min(self.height, content_bottom + bottom_pad)
-
-                # For full-width diagrams, use refined Y. For side-diagrams, keep original Y band.
-                if section.get('x', 0) == 0 and section.get('w', self.width) == self.width:
-                    section['y_start'] = refined_y_start
-                    section['y_end'] = refined_y_end
-                
-                section['height'] = section['y_end'] - section['y_start']
-
-                # Now tighten horizontal span around non-paragraph (likely diagram) boxes
-                label_boxes = [
-                    b for b in boxes_in_band
-                    if id(b) not in paragraph_box_ids and b.get('text', '').strip()
-                ]
-
-                if label_boxes:
-                    min_x = min(b['x'] for b in label_boxes)
-                    max_x = max(b['x'] + b['w'] for b in label_boxes)
-                    pad_x = 40
-                    new_x = max(0, min_x - pad_x)
-                    new_right = min(self.width, max_x + pad_x)
-                    section['x'] = new_x
-                    section['w'] = max(0, new_right - new_x)
-                else:
-                    section.setdefault('x', 0)
-                    section.setdefault('w', self.width)
-        
-        # Group text sections into paragraphs
+        # 4. Generate Output Structure
         paragraphs = []
-        for section in merged_sections:
+        diagram_regions = []
+        
+        for section in page_sections:
             if section['type'] == 'text':
                 para_groups = self._group_into_paragraphs(section['boxes'])
                 for para in para_groups:
@@ -438,8 +383,8 @@ class SmartLayoutReconstructor:
                     'h': section['height'],
                     'position_in_flow': section['y_start']
                 })
-        
-        return {'paragraphs': paragraphs, 'diagram_regions': diagram_regions, 'page_sections': merged_sections}
+
+        return {'paragraphs': paragraphs, 'diagram_regions': diagram_regions, 'page_sections': page_sections}
 
     def reconstruct_from_layout_analysis(self, layout_data, text_boxes):
         """
@@ -505,1068 +450,300 @@ class SmartLayoutReconstructor:
             rtype = region.get('type')
             rbox = region.get('box_pixel')
             
-            # REMOVED: Heuristic Reclassification Guards (Title/Density)
-            # We trust the AI output to be correct as per user request to revert.
-            
-            if rtype == 'diagram':
-                # Diagram Region: Use the AI bounding box with generous padding
-                # Charts often have labels (axis numbers, titles) just outside the main visual box.
-                # AI sometimes draws the box tight around the lines.
-                pad_x = 30
-                pad_y = 30
-                
-                # Apply padding and clamp to image dimensions
+            # --- Dedicated Pipeline Handling ---
+            if rtype == 'technical_diagram' or rtype == 'diagram': 
+                # DIAGRAM PIPELINE
+                pad_x, pad_y = 30, 30
                 x_start = max(0, rbox['x'] - pad_x)
                 y_start = max(0, rbox['y'] - pad_y)
                 x_end = min(self.width, rbox['x'] + rbox['w'] + pad_x)
                 y_end = min(self.height, rbox['y'] + rbox['h'] + pad_y)
-                
                 page_sections.append({
                     'type': 'diagram',
-                    'x': x_start,
-                    'y_start': y_start,
-                    'y_end': y_end,
-                    'w': x_end - x_start,
-                    'height': y_end - y_start,
-                    'boxes': region_text_map[id(region)] # These are labels!
-                })
-                print(f"  [Layout] Added Diagram at Y={y_start} (padded) with {len(region_text_map[id(region)])} labels")
-                
-            elif rtype == 'text_block' or rtype == 'caption' or rtype == 'header_footer':
-                # Text Region: Gather assigned boxes
-                assigned_boxes = region_text_map[id(region)]
-                if assigned_boxes:
-                    page_sections.append({
-                        'type': 'text',
-                        'boxes': assigned_boxes,
-                        'y_start': rbox['y'],
-                        'y_end': rbox['y'] + rbox['h']
-                    })
-                    print(f"  [Layout] Added Text Block at Y={rbox['y']} with {len(assigned_boxes)} boxes")
-            
-            elif rtype == 'table':
-                # Treat table similar to diagram for now (placeholder) or text if we want to translate cells
-                # Ideally, TableAgent handles this. For layout reconstruction, we might treat it as a 'diagram' placeholder
-                # if we don't have a rendered table artifact yet.
-                # For now, let's treat it as a diagram region so it gets cropped and preserved
-                page_sections.append({
-                    'type': 'diagram', # Preserve tables as images for now to avoid breaking
-                    'x': rbox['x'],
-                    'y_start': rbox['y'],
-                    'y_end': rbox['y'] + rbox['h'],
-                    'w': rbox['w'],
-                    'height': rbox['h'],
+                    'subtype': 'technical',
+                    'x': x_start, 'y_start': y_start, 'y_end': y_end,
+                    'w': x_end - x_start, 'height': y_end - y_start,
                     'boxes': region_text_map[id(region)]
                 })
-                print(f"  [Layout] Added Table (as Diagram) at Y={rbox['y']}")
+                print(f"  [Layout] Added Technical Diagram at Y={y_start}")
 
-        # 3. Handle Unassigned Boxes (orphans)
-        if unassigned_boxes:
-            # Simple fallback: ignore them to keep output clean, or add as text at end
-            pass
+            elif rtype == 'chart':
+                # CHART PIPELINE
+                pad_x, pad_y = 50, 50 # More padding for charts
+                x_start = max(0, rbox['x'] - pad_x)
+                y_start = max(0, rbox['y'] - pad_y)
+                x_end = min(self.width, rbox['x'] + rbox['w'] + pad_x)
+                y_end = min(self.height, rbox['y'] + rbox['h'] + pad_y)
+                page_sections.append({
+                    'type': 'chart', # Explicit CHART type
+                    'x': x_start, 'y_start': y_start, 'y_end': y_end,
+                    'w': x_end - x_start, 'height': y_end - y_start,
+                    'boxes': region_text_map[id(region)]
+                })
+                print(f"  [Layout] Added Chart at Y={y_start} with extra padding")
 
-        # 3b. MERGE ADJACENT DIAGRAMS (Fix for split diagrams/ghosts)
-        # If the AI detected multiple diagram boxes that are close together (e.g. Parts A and B, or Figure + Caption),
-        # merge them into one single diagram section to prevent splitting across pages.
+            elif rtype in ['text_block', 'caption', 'header_footer']:
+                # TEXT PIPELINE
+                assigned_boxes = region_text_map[id(region)]
+                if assigned_boxes:
+                    page_sections.append({'type': 'text', 'boxes': assigned_boxes, 'y_start': rbox['y'], 'y_end': rbox['y'] + rbox['h']})
+            
+            elif rtype == 'table':
+                # TABLE PIPELINE (Preserve as image for now/placeholder)
+                page_sections.append({
+                    'type': 'diagram', # Fallback to image for safety
+                    'x': rbox['x'], 'y_start': rbox['y'], 'y_end': rbox['y'] + rbox['h'],
+                    'w': rbox['w'], 'height': rbox['h'],
+                    'boxes': region_text_map[id(region)]
+                })
+
+        # Merge Logic (Diagrams)
         merged_sections = []
         if page_sections:
             merged_sections.append(page_sections[0])
             for i in range(1, len(page_sections)):
                 prev = merged_sections[-1]
                 curr = page_sections[i]
-                
-                # Check for Diagram -> Diagram merge
+                # Merge Diagram+Diagram
                 if prev['type'] == 'diagram' and curr['type'] == 'diagram':
                     gap = curr['y_start'] - prev['y_end']
-                    # Merge if close (gap < 200) OR overlapping (gap < 0)
-                    if gap < 300: 
-                        print(f"  [Layout] Merging adjacent diagrams (gap={gap})...")
-                        # Expand bounds
+                    if gap < 300:
                         prev['y_end'] = max(prev['y_end'], curr['y_end'])
                         prev['height'] = prev['y_end'] - prev['y_start']
-                        # Union of width/x
-                        new_x = min(prev['x'], curr['x'])
-                        new_right = max(prev['x'] + prev['w'], curr['x'] + curr['w'])
-                        prev['x'] = new_x
-                        prev['w'] = new_right - new_x
-                        # Merge text boxes
                         prev['boxes'].extend(curr['boxes'])
                         continue
-                
                 merged_sections.append(curr)
-        
         page_sections = merged_sections
 
-        # 4. Generate Output Structure
         paragraphs = []
-        diagram_regions = []
+        diagram_regions = [] # Used for legacy text filtering
+        chart_regions = []   # New
         
         for section in page_sections:
             if section['type'] == 'text':
                 para_groups = self._group_into_paragraphs(section['boxes'])
-                for para in para_groups:
-                    paragraphs.append({
-                        'boxes': para,
-                        'y_position': para[0]['y']
-                    })
+                for para in para_groups: paragraphs.append({'boxes': para, 'y_position': para[0]['y']})
             elif section['type'] == 'diagram':
-                diagram_regions.append({
-                    'x': section['x'],
-                    'y': section['y_start'],
-                    'w': section['w'],
-                    'h': section['height'],
-                    'position_in_flow': section['y_start']
-                })
+                diagram_regions.append({'x': section['x'], 'y': section['y_start'], 'w': section['w'], 'h': section['height']})
+            elif section['type'] == 'chart':
+                chart_regions.append({'x': section['x'], 'y': section['y_start'], 'w': section['w'], 'h': section['height']})
+                # Add to diagram_regions too so text is filtered out from prose
+                diagram_regions.append({'x': section['x'], 'y': section['y_start'], 'w': section['w'], 'h': section['height']})
 
-        return {'paragraphs': paragraphs, 'diagram_regions': diagram_regions, 'page_sections': page_sections}
+        return {'paragraphs': paragraphs, 'diagram_regions': diagram_regions, 'chart_regions': chart_regions, 'page_sections': page_sections}
 
     def _group_into_paragraphs(self, boxes):
-        """Group text boxes into logical paragraphs based on positioning"""
-        if not boxes:
-            return []
-        
+        if not boxes: return []
         paragraphs = []
         current_para = []
         last_y = None
-        line_height_tolerance = 50  # Tolerance for same paragraph
-        
+        line_height_tolerance = 50
         sorted_boxes = sorted(boxes, key=lambda b: (b['y'], b['x']))
-        
         for box in sorted_boxes:
             if last_y is None or abs(box['y'] - last_y) <= line_height_tolerance:
                 current_para.append(box)
             else:
-                # New paragraph detected
-                if current_para:
-                    paragraphs.append(current_para)
+                if current_para: paragraphs.append(current_para)
                 current_para = [box]
-            
             last_y = box['y']
-        
-        if current_para:
-            paragraphs.append(current_para)
-        
+        if current_para: paragraphs.append(current_para)
         return paragraphs
     
     def _combine_paragraph_text(self, paragraph_boxes):
-        """Combine text from paragraph boxes into coherent text"""
-        # Sort by position
         sorted_boxes = sorted(paragraph_boxes, key=lambda b: (b['y'], b['x']))
-        
-        # Group into lines
         lines = []
         current_line = []
         last_y = None
         tolerance = 20
-        
         for box in sorted_boxes:
-            if 'translation' not in box or not box['translation']:
-                continue
-            
+            if 'translation' not in box or not box['translation']: continue
             if last_y is None or abs(box['y'] - last_y) <= tolerance:
                 current_line.append(box)
                 last_y = box['y'] if last_y is None else last_y
             else:
-                if current_line:
-                    lines.append(current_line)
+                if current_line: lines.append(current_line)
                 current_line = [box]
                 last_y = box['y']
-        
-        if current_line:
-            lines.append(current_line)
-        
-        # Combine lines into paragraph text
+        if current_line: lines.append(current_line)
         paragraph_text = []
         for line in lines:
             line_boxes = sorted(line, key=lambda b: b['x'])
             line_text = ' '.join([b['translation'].strip() for b in line_boxes if b['translation'].strip()])
-            if line_text:
-                paragraph_text.append(line_text)
-        
+            if line_text: paragraph_text.append(line_text)
         return ' '.join(paragraph_text)
     
     def _translate_paragraphs_individually(self, paragraphs, translator):
-        """Fallback: translate each paragraph individually"""
         translations = []
         for i, para in enumerate(paragraphs):
             japanese_texts = []
             for box in para['boxes']:
-                if 'text' in box and box['text']:
-                    japanese_texts.append(box['text'])
-            
+                if 'text' in box and box['text']: japanese_texts.append(box['text'])
             paragraph_japanese = ' '.join(japanese_texts)
-            
             if paragraph_japanese.strip():
                 try:
-                    para_translation = translator.translate_text(
-                        paragraph_japanese,
-                        context="technical manual",
-                        source_lang='ja',
-                        target_lang='en'
-                    )
+                    para_translation = translator.translate_text(paragraph_japanese, context="technical manual", source_lang='ja', target_lang='en')
                     translations.append(para_translation)
-                except:
-                    translations.append(paragraph_japanese)
-            else:
-                translations.append("")
-        
+                except: translations.append(paragraph_japanese)
+            else: translations.append("")
         return translations
     
-    def reconstruct_pdf(self, text_boxes, output_path, translator=None, full_page_japanese=None, translated_diagrams=None, book_context=None, table_artifacts=None, chart_artifacts=None, render_capture=None, translated_paragraphs=None, layout=None):
-        """
-        Intelligently reconstruct the PDF with proper layout
-        """
+    def reconstruct_pdf(self, text_boxes, output_path, translator=None, full_page_japanese=None, translated_diagrams=None, translated_charts=None, book_context=None, table_artifacts=None, chart_artifacts=None, render_capture=None, translated_paragraphs=None, layout=None):
         def _is_critical_label(text):
-            """Return True for short, important diagram tokens like A, B, P1, P2, V1, V2.
-
-            Both current English text and original text are checked by the
-            caller. Non-alphanumeric chars are stripped before comparison.
-            """
-            if not text:
-                return False
+            if not text: return False
             cleaned = re.sub(r"[^A-Za-z0-9]", "", str(text)).lower()
-            if not cleaned:
-                return False
-            # Include single digits, digits in brackets/circles, and more technical codes
-            critical_patterns = [
-                r"^\d+$",               # Pure numbers
-                r"^\(\d+\)$",           # (1), (2), etc
-                r"^\[\d+\]$",           # [1], [2], etc
-                r"^[a-z]\d*$",          # a, b, v1, p2, etc
-                r"^[a-z]{2}\d*$"        # pa, pb, va, vb, etc
-            ]
-            for pattern in critical_patterns:
-                if re.match(pattern, cleaned):
-                    return True
-            return False
+            if not cleaned: return False
+            return re.match(r"^\d+$", cleaned) or re.match(r"^[a-z]\d*$", cleaned)
 
         print(f"Analyzing document layout structure...")
         page_number = None
-        
-        # Try to extract page number from text boxes first (before layout analysis)
-        # Look for page number in top-right area of page (common location)
         if text_boxes:
-            # Sort boxes by y position (top to bottom)
             sorted_boxes = sorted(text_boxes, key=lambda b: (b.get('y', 0), b.get('x', 0)))
-            # Check first 20 boxes (top of page)
             for box in sorted_boxes[:20]:
                 text = box.get('text', '').strip()
-                if not text:
-                    continue
-                # Check if box is in top-right area (right 30% of page, top 15% of page)
-                box_x = box.get('x', 0)
-                box_y = box.get('y', 0)
-                if box_x > self.width * 0.7 and box_y < self.height * 0.15:
-                    # Try to match page number pattern: "- 25 -" or "— 25 —"
-                    m = re.search(r"(?:-|\u2014)\s*(\d{1,3})\s*(?:-|\u2014)", text)
-                    if m:
-                        page_number = m.group(1)
-                        print(f"  Found page number from OCR box: {page_number}")
+                if not text: continue
+                if box.get('x', 0) > self.width * 0.7 and box.get('y', 0) < self.height * 0.15:
+                    if re.search(r"(?:-|\u2014)\s*(\d{1,3})\s*(?:-|\u2014)", text):
+                        page_number = re.search(r"(\d+)", text).group(1)
                         break
-                    # Also try bare number if it's isolated
-                    if re.match(r"^\s*\d{1,3}\s*$", text):
-                        val = int(text.strip())
-                        if 1 <= val <= 999:
-                            page_number = text.strip()
-                            print(f"  Found page number from OCR box: {page_number}")
-                            break
         
-        # Analyze the layout
-        if not layout:
-            layout = self._analyze_layout_structure(text_boxes)
-        
-        print(f"  Found {len(layout['paragraphs'])} paragraphs")
-        print(f"  Found {len(layout['diagram_regions'])} diagram regions")
-        print(f"  Total sections: {len(layout['page_sections'])}")
-        
-        # If page number not found from text boxes, try from full_page_japanese if available
-        if page_number is None and full_page_japanese:
-            lines = full_page_japanese.split('\n')
-            # Pass 1: Find the page number line - format "- NN -" or "— NN —"
-            for idx, line in enumerate(lines[:8]):  # Check only first 8 lines
-                stripped = line.strip()
-                m = re.search(r"(?:^|\s)(?:-|\u2014)\s*(\d{1,3})\s*(?:-|\u2014)(?:\s|$)", stripped)
-                if m:
-                    page_number = m.group(1)
-                    print(f"  Found page number from full_page_japanese: {page_number}")
-                    break
-        
-        # Decide which translated paragraphs to use
-        if translated_paragraphs is not None:
-            print(f"  Using pre-translated paragraphs ({len(translated_paragraphs)} items)")
-        elif translator and full_page_japanese:
-            print(f"  Translating full page text with complete context...")
-            print(f"  Japanese text: {len(full_page_japanese)} characters")
-
-            lines = full_page_japanese.split('\n')
-
-            # Pass 1: Find the page number line and mark its index
-            # High priority: format "- NN -" or "— NN —" (canonical manual style)
-            page_number_line_idx = None
-            for idx, line in enumerate(lines[:8]):  # Check only first 8 lines
-                stripped = line.strip()
-                # Strict pattern: dashes or em-dashes around 1-3 digits
-                m = re.search(r"(?:^|\s)(?:-|\u2014)\s*(\d{1,3})\s*(?:-|\u2014)(?:\s|$)", stripped)
-                if m:
-                    page_number = m.group(1)
-                    page_number_line_idx = idx
-                    break
-                
-            # Pass 2: If no dashed format, try bare 1-3 digit number BUT it must be line 1 or 2
-            # and it must NOT look like a dimension (no decimal points, no units)
-            if page_number is None:
-                for idx, line in enumerate(lines[:3]):
-                    stripped = re.sub(r"[()\[\]\s]", "", line)
-                    if re.match(r"^\d{1,3}$", stripped):
-                        # Ensure it's not a common coordinate/dimension like 0 or 1000
-                        val = int(stripped)
-                        if 1 <= val <= 999:
-                            # Final check: it should be isolated
-                            if re.match(r"^\s*[()\[\]\s]*\d{1,3}[()\[\]\s]*$", line):
-                                page_number = stripped
-                                page_number_line_idx = idx
-                                break
-
-            # Pass 3: Build cleaned lines, skipping the page-number line and initial noise
-            cleaned_lines = []
-            for idx, line in enumerate(lines):
-                if idx == page_number_line_idx:
-                    continue
-                # Skip empty lines or noise symbols at the very start
-                if idx < 3 and line.strip() in ['()', '( )', '[]', '[ ]', '']:
-                    continue
-                cleaned_lines.append(line)
-
-            cleaned_japanese = "\n".join(cleaned_lines)
-
-            # Add book context to translation request
-            trans_context = "technical manual - preserve paragraph breaks and structure"
-            if book_context:
-                trans_context = f"{trans_context}. Book Context: {book_context}"
-            
-            try:
-                full_translation = translator.translate_text(
-                    cleaned_japanese,
-                    context=trans_context,
-                    source_lang='ja',
-                    target_lang='en'
-                )
-                print(f"  English text: {len(full_translation)} characters")
-                
-                # Split translation into paragraphs
-                translated_paragraphs = [p.strip() for p in full_translation.split('\n\n') if p.strip()]
-                if not translated_paragraphs:
-                    translated_paragraphs = [p.strip() for p in full_translation.split('\n') if p.strip()]
-                
-                print(f"  Split into {len(translated_paragraphs)} translated paragraphs")
-                
-            except Exception as e:
-                print(f"  Warning: Full page translation failed: {e}")
-                print(f"  Falling back to paragraph-by-paragraph translation...")
-                translated_paragraphs = self._translate_paragraphs_individually(layout['paragraphs'], translator)
-        else:
-            # Fallback to paragraph translation
-            translated_paragraphs = self._translate_paragraphs_individually(layout['paragraphs'], translator)
+        if not layout: layout = self._analyze_layout_structure(text_boxes)
         
         # Create PDF
-        pdf_width, pdf_height = A4
         c = canvas.Canvas(output_path, pagesize=A4)
         self.canvas = c
-        
-        # White background
         c.setFillColorRGB(1, 1, 1)
-        c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
-        
-        # Setup text
+        c.rect(0, 0, self.page_width, self.page_height, fill=1, stroke=0)
         c.setFillColor(black)
         font_size = 11
         c.setFont(self.font_name, font_size)
         line_height = font_size * 1.5
-        
-        margin_left = 60
-        margin_right = pdf_width - 60
-        max_text_width = margin_right - margin_left
-        current_y = pdf_height - 80
+        current_y = self.page_height - 80
         at_page_top = True
-        
         paragraph_index = 0
-        legend_items = []  # Initialize legend items list for diagram annotations
+        legend_items = []
         
-        # Prepare artifact lists
         table_queue = list(table_artifacts or [])
-        chart_queue = list(chart_artifacts or [])
-        print(f"[Reconstructor] DEBUG: Received {len(table_queue)} table artifacts, {len(chart_queue)} chart artifacts")
-        if table_queue:
-            for i, t in enumerate(table_queue):
-                print(f"[Reconstructor] DEBUG: Table {i}: {t.rows}x{t.cols} with {len(t.cells)} cells")
-
-        # Helpers to render artifacts
+        
         def _render_table(table_artifact):
             nonlocal current_y
-            print(f"[Reconstructor] ⚠️  RENDERING TABLE ARTIFACT: {table_artifact.id} ({table_artifact.rows}x{table_artifact.cols})")
-            print(f"[Reconstructor] ⚠️  Table has {len(table_artifact.cells)} cells")
-            print(f"[Reconstructor] ⚠️  Sample cells: {[c.text[:20] for c in table_artifact.cells[:5]]}")
-            rows = table_artifact.rows
-            cols = table_artifact.cols
-            cells = table_artifact.cells
-            
-            if not cells:
-                return
+            print(f"Render Table: {table_artifact.id}")
+            # Placeholder implementation
 
-            # Prepare data in a list of lists format for ReportLab Table
-            data = [["" for _ in range(cols)] for _ in range(rows)]
-            span_commands = []
-            
-            # Use a style for paragraphs to allow for text wrapping
-            styles = getSampleStyleSheet()
-            style = styles['Normal']
-            style.fontName = self.font_name
-            style.fontSize = 8
-            style.leading = 10
-
-            for cell in cells:
-                r, c_idx = cell.row, cell.col
-                # Safety check: skip cells that fall outside the grid (should be handled by agent, but stay safe)
-                if r >= rows or c_idx >= cols or r < 0 or c_idx < 0:
-                    continue
-                    
-                text = cell.translation or cell.text or ""
-                # Wrap cell content in a Paragraph object
-                data[r][c_idx] = Paragraph(text.replace('\\n', '<br/>'), style)
-                
-                # Handle spans if they exist (though our current detector doesn't find them)
-                row_span = getattr(cell, 'row_span', 1)
-                col_span = getattr(cell, 'col_span', 1)
-                if row_span > 1 or col_span > 1:
-                    # Final safety check for span range
-                    if r + row_span <= rows and c_idx + col_span <= cols:
-                        span_commands.append(('SPAN', (c_idx, r), (c_idx + col_span - 1, r + row_span - 1)))
-
-            # Create the ReportLab table object
-            # Set available width for the table (page width - margins)
-            available_width = self.page_width - self.margin_left - self.margin_right
-            
-            # Explicitly calculate column widths to avoid ReportLab "negative availWidth" errors
-            # and ensure column widths are at least 10 points
-            col_width = max(10, available_width / max(1, cols))
-            col_widths = [col_width] * cols
-            
-            try:
-                # Create table and apply styles
-                table = Table(data, colWidths=col_widths, repeatRows=1)
-                
-                # Professional styling
-                style_list = [
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#E0E0E0")), # Header background
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                    ('FONTNAME', (0, 0), (-1, 0), self.font_name_bold), # Header font
-                    ('FONTNAME', (0, 1), (-1, -1), self.font_name), # Body font
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
-                    ('TOPPADDING', (0, 0), (-1, 0), 4),
-                    ('BOTTOMPADDING', (0, 1), (-1, -1), 2),
-                    ('TOPPADDING', (0, 1), (-1, -1), 2),
-                    ('GRID', (0, 0), (-1, -1), 0.5, colors.black), # Grid lines
-                    ('FONTSIZE', (0, 0), (-1, -1), 7), # Smaller font for tables
-                ]
-                
-                table.setStyle(TableStyle(style_list))
-                
-                # Add span commands if any
-                if span_commands:
-                    for cmd in span_commands:
-                        table.setStyle(TableStyle([cmd]))
-
-                # Calculate the required height of the table on the page
-                w, h = table.wrapOn(self.canvas, available_width, self.page_height)
-
-                # If there's not enough space, start a new page
-                if current_y - h < self.margin_bottom:
-                    self.canvas.showPage()
-                    self.canvas.setFont(self.font_name, self.font_size)
-                    current_y = self.page_height - self.margin_top
-
-                # Draw the table on the canvas
-                table.drawOn(self.canvas, self.margin_left, current_y - h)
-                
-                # Update the current y-position
-                current_y -= (h + self.line_height)
-            except Exception as table_err:
-                print(f"  ! Warning: Table rendering failed: {table_err}")
-                # Fallback: just draw a placeholder text so the whole PDF doesn't fail
-                self.canvas.setFont(self.font_name_bold, 10)
-                self.canvas.drawString(self.margin_left, current_y, "[Table Data - Error Rendering]")
-                current_y -= 20
-
-        def _render_diagram_at(section, c, pdf_width, pdf_height, render_y_top, translated_diagrams):
+        def _render_diagram_at(section, c, pdf_width, pdf_height, render_y_top, translated_diagrams, is_chart=False):
             nonlocal current_y, at_page_top, legend_items
-            
-            # Determine if this is a very small inline diagram
-            # Safely get section dimensions
             section_y_start = section.get('y_start', 0)
-            section_y_end = section.get('y_end', section_y_start + 100)
-            section_height = section.get('height', section_y_end - section_y_start)
-            small_diagram = section_height < self.height * 0.18
+            section_height = section.get('height', 200)
             
-            # Always define section coordinates for use in matching and fallback
-            section_x = section.get('x', 0)
-            section_y = section_y_start
-            section_w = section.get('w', self.width)
-            section_h = section_height
-            
-            # Find matching translated diagram if available
+            # Find match
             diagram_image = None
             diagram_annotations = []
             
-            if translated_diagrams:
-                # Match by area overlap instead of just y-position for better accuracy
-                
+            source_list = translated_charts if is_chart else translated_diagrams
+            
+            if source_list:
                 best_match = None
                 best_overlap = 0
-                
-                for trans_diag in translated_diagrams:
+                for trans_diag in source_list:
                     region = trans_diag['region']
-                    reg_x = region.get('x', 0)
-                    reg_y = region.get('y', 0)
-                    reg_w = region.get('w', 0)
-                    reg_h = region.get('h', 0)
-                    
-                    # Calculate overlap area
-                    overlap_x = max(section_x, reg_x)
-                    overlap_y = max(section_y, reg_y)
-                    overlap_w = max(0, min(section_x + section_w, reg_x + reg_w) - overlap_x)
-                    overlap_h = max(0, min(section_y + section_h, reg_y + reg_h) - overlap_y)
-                    overlap_area = overlap_w * overlap_h
-                    
-                    # Calculate union area
-                    section_area = section_w * section_h
-                    reg_area = reg_w * reg_h
-                    union_area = section_area + reg_area - overlap_area
-                    
-                    # Calculate IoU (Intersection over Union)
-                    if union_area > 0:
-                        iou = overlap_area / union_area
-                        # Also check vertical position as secondary criterion (more tolerant)
-                        y_dist = abs(section_y - reg_y)
-                        # If IoU is good OR vertical position is close (within 100px), consider it a match
-                        if iou > 0.3 or (iou > 0.1 and y_dist < 100):
-                            if iou > best_overlap:
-                                best_overlap = iou
-                                best_match = trans_diag
+                    # Overlap logic
+                    overlap_y = max(section_y_start, region['y'])
+                    overlap_h = max(0, min(section_y_start + section_height, region['y'] + region['h']) - overlap_y)
+                    if overlap_h > 0:
+                        best_match = trans_diag
+                        break # First match
                 
                 if best_match:
                     diagram_image = best_match['image']
                     diagram_annotations = best_match.get('annotations', [])
-                    print(f"[Reconstructor] Matched diagram: IoU={best_overlap:.3f}, section_y={section_y}, region_y={reg_y}")
-                else:
-                    print(f"[Reconstructor] No diagram match found for section at y={section_y} (checked {len(translated_diagrams)} diagrams)")
             
-            # Fallback to original crop if no translation available
-            if diagram_image is None:
-                # Use section coordinates (already defined above)
-                # Ensure coordinates are within image bounds
-                try:
-                    # Recalculate section dimensions from section dict for fallback
-                    section_x = section.get('x', 0)
-                    section_y = section_y_start
-                    section_w = section.get('w', self.width)
-                    section_h = section_height
-                    
-                    # Ensure coordinates are within image bounds
-                    section_x = max(0, min(int(section_x), self.width - 1))
-                    section_y = max(0, min(int(section_y), self.height - 1))
-                    section_w = max(1, min(int(section_w), self.width - section_x))
-                    section_h = max(1, min(int(section_h), self.height - section_y))
-                    
-                    # Validate dimensions are positive
-                    if section_w <= 0 or section_h <= 0:
-                        print(f"[Reconstructor] Warning: Invalid diagram dimensions (w={section_w}, h={section_h}), skipping diagram.")
-                        print(f"  Section: {section}")
-                        print(f"  Image size: {self.width}x{self.height}")
-                        return
-                    
-                    # Validate crop coordinates
-                    crop_right = min(section_x + section_w, self.width)
-                    crop_bottom = min(section_y + section_h, self.height)
-                    
-                    print(f"[Reconstructor] Using fallback diagram crop: x={section_x}, y={section_y}, w={section_w}, h={section_h}")
-                    print(f"[Reconstructor] Crop bounds: ({section_x}, {section_y}) to ({crop_right}, {crop_bottom})")
-                    print(f"[Reconstructor] Original image size: {self.width}x{self.height}")
-                    
-                    diagram_image = self.image.crop((
-                        section_x,
-                        section_y,
-                        crop_right,
-                        crop_bottom
-                    ))
-                    
-                    print(f"[Reconstructor] Cropped diagram size: {diagram_image.width}x{diagram_image.height}")
-                    
-                    # Verify crop is not empty
-                    if diagram_image.width <= 0 or diagram_image.height <= 0:
-                        print(f"[Reconstructor] Error: Cropped diagram is empty ({diagram_image.width}x{diagram_image.height})")
-                        return
-                        
-                except Exception as e:
-                    print(f"[Reconstructor] Error cropping fallback diagram: {e}")
-                    print(f"  Section: {section}")
-                    print(f"  Image size: {self.width}x{self.height}")
-                    import traceback
-                    traceback.print_exc()
-                    # Create a small placeholder image to prevent complete failure
-                    from PIL import Image
-                    diagram_image = Image.new('RGB', (100, 100), color='white')
-            
-            # Calculate scaled dimensions
-            # Ensure diagram_image exists and has valid dimensions
-            if diagram_image is None:
-                print(f"[Reconstructor] Warning: No diagram image available, skipping diagram rendering")
-                return
-                
-            if diagram_image.width <= 0 or diagram_image.height <= 0:
-                print(f"[Reconstructor] Warning: Invalid diagram image dimensions ({diagram_image.width}x{diagram_image.height}), skipping")
-                return
-                
-            side = section.get('side') # 'left', 'right' or None
-            if side:
-                # Side diagram: use 40% of available width
-                diagram_width_pdf = (pdf_width - 120) * 0.4
-                scale = diagram_width_pdf / diagram_image.width if diagram_image.width > 0 else 1.0
-                diagram_height_pdf = diagram_image.height * scale
-                if side == 'right':
-                    diagram_x = pdf_width - 60 - diagram_width_pdf
-                else: # left
-                    diagram_x = 60
-                # Use render_y_top (aligned with text block)
-                diagram_y = render_y_top - diagram_height_pdf
-            else:
-                # Full-width diagram - use actual diagram image dimensions for proper scaling
-                diagram_width_pdf = pdf_width - 120
-                scale = 1.0  # Initialize scale to avoid NameError
-                if diagram_image.width > 0 and diagram_image.height > 0:
-                    # Calculate scale based on width constraint
-                    scale_width = diagram_width_pdf / diagram_image.width
-                    # Calculate resulting height
-                    diagram_height_pdf = diagram_image.height * scale_width
-                    # Check if diagram fits on current page
-                    available_height = current_y - 80  # Space from current_y to bottom margin
-                    max_page_height = pdf_height - 160  # Maximum diagram height on a page (top+bottom margins)
-                    # If diagram doesn't fit on current page, always start a new page unless at top
-                    if diagram_height_pdf > available_height:
-                        # If diagram is too large for a fresh page, shrink to fit
-                        if diagram_height_pdf > max_page_height:
-                            scale_height = max_page_height / diagram_image.height
-                            scale = min(scale_width, scale_height)
-                            diagram_height_pdf = diagram_image.height * scale
-                            diagram_width_pdf = diagram_image.width * scale
-                            print(f"[Reconstructor] Diagram too large for any page, shrinking to fit: {diagram_width_pdf:.1f}x{diagram_height_pdf:.1f}")
-                        else:
-                            # Always start a new page for large diagrams
-                            print(f"[Reconstructor] Starting new page for diagram (available={available_height:.1f})")
-                            c.showPage()
-                            c.setFillColorRGB(1, 1, 1)
-                            c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
-                            c.setFillColor(black)
-                            c.setFont(self.font_name, font_size)
-                            current_y = pdf_height - 80
-                            at_page_top = True
-                            # Render page number on new page if available
-                            if page_number is not None:
-                                header_text = f"Page {page_number}"
-                                c.setFont(self.font_name, 11)
-                                header_width = c.stringWidth(header_text, self.font_name, 11)
-                                header_y = pdf_height - 40
-                                center_x = (pdf_width - header_width) / 2
-                                c.drawString(center_x, header_y, header_text)
-                                print(f"[Reconstructor] Rendered page number on new diagram page: {header_text}")
-                                c.setFont(self.font_name, font_size)
-                                current_y = header_y - 20  # Space below page number
-                                at_page_top = False
-                            # Recalculate with new current_y
-                            available_height = current_y - 80
-                            # Recalculate scale for new page
-                            scale_width = diagram_width_pdf / diagram_image.width
-                            if diagram_height_pdf > available_height:
-                                scale_height = available_height / diagram_image.height
-                                scale = min(scale_width, scale_height)
-                                diagram_height_pdf = diagram_image.height * scale
-                                diagram_width_pdf = diagram_image.width * scale
-                                print(f"[Reconstructor] Diagram on new page: {diagram_width_pdf:.1f}x{diagram_height_pdf:.1f}")
-                    else:
-                        # Diagram fits - use width-based scale
-                        scale = scale_width
-                else:
-                    print(f"[Reconstructor] Warning: Diagram image has invalid dimensions ({diagram_image.width}x{diagram_image.height})")
-                    scale = 1.0
-                    diagram_height_pdf = section_height if section_height > 0 else 200
-                    if diagram_image.width > 0:
-                        diagram_width_pdf = diagram_image.width * scale
-                # Position diagram
-                diagram_y = current_y - diagram_height_pdf
-                diagram_x = (pdf_width - diagram_width_pdf) / 2
-                # Ensure diagram doesn't go below bottom margin
-                if diagram_y < 80:
-                    print(f"[Reconstructor] Diagram would overflow bottom margin (y={diagram_y:.1f}), starting new page.")
-                    c.showPage()
-                    c.setFillColorRGB(1, 1, 1)
-                    c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
-                    c.setFillColor(black)
-                    c.setFont(self.font_name, font_size)
-                    current_y = pdf_height - 80
-                    at_page_top = True
-                    if page_number is not None:
-                        header_text = f"Page {page_number}"
-                        c.setFont(self.font_name, 11)
-                        header_width = c.stringWidth(header_text, self.font_name, 11)
-                        header_y = pdf_height - 40
-                        center_x = (pdf_width - header_width) / 2
-                        c.drawString(center_x, header_y, header_text)
-                        print(f"[Reconstructor] Rendered page number on new diagram page: {header_text}")
-                        c.setFont(self.font_name, font_size)
-                        current_y = header_y - 20
-                        at_page_top = False
-                    # Recalculate diagram_y after new page
-                    diagram_y = current_y - diagram_height_pdf
+            if not diagram_image:
+                # Fallback crop
+                diagram_image = self.image.crop((section['x'], section['y_start'], section['x']+section['w'], section['y_end']))
 
-            # Draw the image - use preserveAspectRatio and better quality settings
-            # Convert to RGB if needed for better rendering quality
+            # Scale and Draw
+            diagram_width_pdf = self.page_width - 120
+            scale = diagram_width_pdf / diagram_image.width if diagram_image.width > 0 else 1.0
+            diagram_height_pdf = diagram_image.height * scale
+            
+            if diagram_height_pdf > (current_y - 80):
+                 c.showPage()
+                 c.setFillColorRGB(1, 1, 1)
+                 c.rect(0, 0, self.page_width, self.page_height, fill=1, stroke=0)
+                 c.setFillColor(black)
+                 c.setFont(self.font_name, font_size)
+                 current_y = self.page_height - 80
+                 at_page_top = True
+            
+            diagram_y = current_y - diagram_height_pdf
+            diagram_x = 60
+            
             if hasattr(diagram_image, 'mode') and diagram_image.mode != 'RGB':
                 diagram_image = diagram_image.convert('RGB')
-            
             img_reader = ImageReader(diagram_image)
-            print(f"[Reconstructor] Drawing diagram: x={diagram_x:.1f}, y={diagram_y:.1f}, w={diagram_width_pdf:.1f}, h={diagram_height_pdf:.1f}")
-            print(f"[Reconstructor] Diagram image: {diagram_image.width}x{diagram_image.height}, scale={scale:.3f}")
+            c.drawImage(img_reader, diagram_x, diagram_y, width=diagram_width_pdf, height=diagram_height_pdf, preserveAspectRatio=True, mask='auto')
             
-            # Use preserveAspectRatio=True to ensure diagram maintains aspect ratio
-            # mask='auto' handles transparency, showBoundary=0 removes border
-            # Better quality rendering by ensuring proper image format
-            c.drawImage(
-                img_reader, 
-                diagram_x, 
-                diagram_y, 
-                width=diagram_width_pdf, 
-                height=diagram_height_pdf,
-                preserveAspectRatio=True,
-                mask='auto',
-                showBoundary=0
-            )
-            
-            # Draw annotations
-            local_legend = []
-            if diagram_annotations:
-                for note in diagram_annotations:
-                    orig_x, orig_y, orig_w, orig_h = note['x'], note['y'], note['w'], note['h']
-                    pdf_x = diagram_x + (orig_x * scale)
-                    pdf_y = diagram_y + (diagram_image.height - orig_y - orig_h/2) * scale
-                    
-                    text = note['text']
-                    # Adjust font sizing: allow smaller fonts for axis numbers to avoid "zoomed" look
-                    # Lower minimum from 6 to 4. Keep max at 10 (or 12 for clarity).
-                    note_font_size = max(4, min(int(orig_h * 0.7 * scale), 12))
-                    text_width = c.stringWidth(text, self.font_name, note_font_size)
-                    box_width_pdf = orig_w * scale
-                    
-                    is_critical = _is_critical_label(text) or _is_critical_label(note.get('original', ''))
-                    is_short = len(text) <= 20 and len(text.split()) <= 3
-                    
-                    if not is_critical and not small_diagram and (note_font_size < 7 or (not is_short and text_width > box_width_pdf * 1.5)):
-                        marker = f"[{len(legend_items) + 1}]"
-                        legend_items.append(f"{marker} {text}")
-                        c.setFont(self.font_name, 8)
-                        c.setFillColorRGB(1, 0, 0)
-                        c.drawString(pdf_x + (box_width_pdf - c.stringWidth(marker, self.font_name, 8))/2, pdf_y, marker)
-                    else:
-                        c.setFont(self.font_name, note_font_size)
-                        c.setFillColor(black)
-                        c.drawString(pdf_x + (box_width_pdf - text_width)/2, pdf_y, text)
-            
-            # Update current_y only if NOT a side diagram (side diagrams are 'floating' next to text)
-            if not side:
-                current_y = diagram_y - line_height
-            
+            # Annotations
+            for note in diagram_annotations:
+                pdf_x = diagram_x + (note['x'] * scale)
+                pdf_y = diagram_y + (diagram_image.height - note['y'] - note['h']/2) * scale
+                text = note['text']
+                
+                # FONT SCALING (Different for Charts)
+                if is_chart:
+                    # Smaller font for charts
+                    font_sz = max(4, min(int(note['h'] * 0.7 * scale), 10))
+                else:
+                    font_sz = max(6, min(int(note['h'] * 0.6 * scale), 10))
+                
+                c.setFont(self.font_name, font_sz)
+                c.drawString(pdf_x, pdf_y, text)
+
+            current_y = diagram_y - 20
             at_page_top = False
 
-        def _render_chart_placeholder(artifact):
-            # NO-OP: charts were requested to be removed to keep layout clean
-            pass
-
-        # Process each section in order
-        print(f"[Reconstructor] Reconstructing PDF from {len(layout['page_sections'])} sections...")
+        print(f"Processing {len(layout['page_sections'])} sections...")
         for i, section in enumerate(layout['page_sections']):
-            print(f"  [Section {i}] type={section['type']} y_range={section.get('y_start', 'N/A')}-{section.get('y_end', 'N/A')}")
             if section['type'] == 'text':
-                # If we're at the start of a PDF page and we captured an
-                # original page number from the Japanese text, render it as a
-                # centered header (e.g., "Page 25") above the content.
-                if at_page_top and page_number is not None:
-                    header_text = f"Page {page_number}"
-                    c.setFont(self.font_name, 11)
-                    header_width = c.stringWidth(header_text, self.font_name, 11)
-                    header_y = pdf_height - 40
-                    center_x = (pdf_width - header_width) / 2
-                    c.drawString(center_x, header_y, header_text)
-                    print(f"[Reconstructor] Rendered page number header: {header_text} at y={header_y}")
-                    c.setFont(self.font_name, font_size)
-                    current_y = header_y - 20  # Add space below page number
-                    at_page_top = False
-
-                # NEW: Calculate how many paragraphs belong to THIS specific section
+                if at_page_top and page_number:
+                     c.drawString(self.page_width/2, self.page_height-40, f"Page {page_number}")
+                     current_y = self.page_height - 80
+                     at_page_top = False
+                
+                # Render Paragraphs
                 section_para_count = len(self._group_into_paragraphs(section['boxes']))
-                # If this is the last text section, just take all remaining paragraphs to be safe
-                if section == [s for s in layout['page_sections'] if s['type'] == 'text'][-1]:
-                    section_para_count = len(translated_paragraphs) - paragraph_index
-                
-                # Check for side diagram and calculate text wrap width
-                side_diag = section.get('side_diagram')
-                section_max_width = max_text_width
-                section_margin_left = margin_left  # Always start with standard left margin
-                
-                if side_diag:
-                    # Adjust text width to leave room for side diagram
-                    available_space = pdf_width - 120 # total horizontal space inside margins (60px margins on each side)
-                    # Give 60% to text, 40% to diagram (roughly)
-                    if side_diag['side'] == 'right':
-                        # Diagram on right, text on left - keep standard left margin
-                        section_max_width = available_space * 0.6
-                        section_margin_left = margin_left  # Keep at 60px
-                    else: # side is 'left'
-                        # Diagram on left, text on right - shift text margin right
-                        section_max_width = available_space * 0.6
-                        section_margin_left = margin_left + (available_space * 0.4) + 20  # Shift right by diagram width + gap
-                else:
-                    # No side diagram - use full width with standard margins
-                    section_max_width = max_text_width
-                    section_margin_left = margin_left
+                for _ in range(section_para_count):
+                    if paragraph_index >= len(translated_paragraphs): break
+                    para_text = translated_paragraphs[paragraph_index]
+                    paragraph_index += 1
+                    
+                    para_text_clean = para_text.strip()
+                    para_text_no_html = re.sub(r'<\s*br\s*/?>', '\n', para_text_clean, flags=re.IGNORECASE)
+                    para_text_no_html = re.sub(r'<[^>]+>', '', para_text_no_html)
+                    para_blocks = [block.strip() for block in re.split(r'\n\s*\n', para_text_no_html) if block.strip()]
+                    
+                    for block in para_blocks:
+                        block_escaped = html.escape(block, quote=False)
+                        para_html = block_escaped.replace('\\n', '<br/>').replace('\n', '<br/>')
+                        try:
+                            para_obj = Paragraph(para_html, ParagraphStyle('Body', fontName=self.font_name, fontSize=11, leading=16))
+                            w, h = para_obj.wrap(self.page_width - 120, self.page_height)
+                            if current_y - h < 80:
+                                c.showPage()
+                                c.setFillColorRGB(1, 1, 1)
+                                c.rect(0, 0, self.page_width, self.page_height, fill=1, stroke=0)
+                                c.setFillColor(black)
+                                c.setFont(self.font_name, font_size)
+                                current_y = self.page_height - 80
+                                at_page_top = True
+                            para_obj.drawOn(c, 60, current_y - h)
+                            current_y -= (h + 10)
+                        except: pass
 
-                # Process text paragraphs for THIS section
-                start_para_idx = paragraph_index
-                
-                if section.get('is_multi_column'):
-                    # Multi-column handling: split boxes into left and right
-                    mid_line = self.width / 2
-                    left_boxes = [b for b in section['boxes'] if b['x'] + b['w']/2 < mid_line]
-                    right_boxes = [b for b in section['boxes'] if b['x'] + b['w']/2 > mid_line]
-                    
-                    lp_count = len(self._group_into_paragraphs(left_boxes))
-                    rp_count = len(self._group_into_paragraphs(right_boxes))
-                    
-                    # Pull translated text for both columns
-                    left_paras = []
-                    for _ in range(lp_count):
-                        if paragraph_index < len(translated_paragraphs):
-                            left_paras.append(translated_paragraphs[paragraph_index])
-                            paragraph_index += 1
-                    
-                    right_paras = []
-                    for _ in range(rp_count):
-                        if paragraph_index < len(translated_paragraphs):
-                            right_paras.append(translated_paragraphs[paragraph_index])
-                            paragraph_index += 1
-                    
-                    # Render side-by-side using Table to preserve alignment
-                    col_width = (pdf_width - 130) / 2
-                    p_style = self.styles['Normal']
-                    p_style.fontName = self.font_name
-                    p_style.fontSize = font_size
-                    p_style.leading = line_height
-                    
-                    left_html = "<br/><br/>".join([p.replace('\n', '<br/>') for p in left_paras])
-                    right_html = "<br/><br/>".join([p.replace('\n', '<br/>') for p in right_paras])
-                    
-                    data = [[
-                        Paragraph(left_html, p_style),
-                        Paragraph(right_html, p_style)
-                    ]]
-                    
-                    t = Table(data, colWidths=[col_width, col_width])
-                    t.setStyle(TableStyle([
-                        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-                        ('LEFTPADDING', (0,0), (-1,-1), 0),
-                        ('RIGHTPADDING', (0,0), (-1,-1), 10),
-                    ]))
-                    tw, th = t.wrap(pdf_width - 120, pdf_height)
-                    
-                    if current_y - th < 80:
-                        c.showPage()
-                        c.setFillColorRGB(1, 1, 1)
-                        c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
-                        c.setFillColor(black)
-                        c.setFont(self.font_name, font_size)
-                        current_y = pdf_height - 80
-                        at_page_top = True
-                    
-                    t.drawOn(c, 60, current_y - th)
-                    current_y -= (th + line_height)
-                else:
-                    # Standard Single-Column Paragraph rendering
-                    for _ in range(section_para_count):
-                        if paragraph_index >= len(translated_paragraphs):
-                            break
-                        
-                        para_text = translated_paragraphs[paragraph_index]
-                        paragraph_index += 1
-                        
-                        if not para_text.strip():
-                            continue
-                        
-                        # Use ReportLab Paragraph for better text rendering with proper word wrapping
-                        from reportlab.platypus import Paragraph as RParagraph
-                        
-                        # Create paragraph style with proper spacing and no indentation
-                        # Create from scratch rather than inheriting to avoid unwanted styles
-                        para_style = ParagraphStyle(
-                            'CustomBody',
-                            fontName=self.font_name,
-                            fontSize=font_size,
-                            leading=line_height,
-                            alignment=TA_LEFT,
-                            leftIndent=0,  # Explicitly set to 0 - no left indentation
-                            rightIndent=0,  # No right indentation
-                            firstLineIndent=0,  # No first line indentation
-                            spaceBefore=0,
-                            spaceAfter=line_height * 0.3,  # Small space after paragraph
-                            wordWrap='CJK',  # Better word wrapping for mixed content
-                            textColor=colors.black,
-                        )
-                        
-                        # Improved paragraph grouping and text organization
-                        import html
-                        para_text_clean = para_text.strip()
-                        # Remove literal HTML tags (e.g., <p>, <div>, <br>, etc.)
-                        para_text_no_html = re.sub(r'<\s*br\s*/?>', '\n', para_text_clean, flags=re.IGNORECASE)
-                        para_text_no_html = re.sub(r'<[^>]+>', '', para_text_no_html)
-                        
-                        # Split on double newlines for paragraph breaks
-                        para_blocks = [block.strip() for block in re.split(r'\n\s*\n', para_text_no_html) if block.strip()]
-                        
-                        for block in para_blocks:
-                            # 1. Escape HTML special chars first
-                            block_escaped = html.escape(block, quote=False)
-                            # 2. Replace newlines with <br/> for ReportLab
-                            para_html = block_escaped.replace('\\n', '<br/>').replace('\n', '<br/>')
-                            
-                            try:
-                                para_obj = RParagraph(para_html, para_style)
-                                # Calculate height needed for this paragraph
-                                para_width = section_max_width
-                                para_height = para_obj.wrap(para_width, pdf_height)[1]
-                                # Check if we need a new page
-                                if current_y - para_height < 80:
-                                    c.showPage()
-                                    c.setFillColorRGB(1, 1, 1)
-                                    c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
-                                    c.setFillColor(black)
-                                    c.setFont(self.font_name, font_size)
-                                    current_y = pdf_height - 80
-                                    at_page_top = True
-                                    # Render page number on new page if available
-                                    if page_number is not None and at_page_top:
-                                        header_text = f"Page {page_number}"
-                                        c.setFont(self.font_name, 11)
-                                        header_width = c.stringWidth(header_text, self.font_name, 11)
-                                        header_y = pdf_height - 40
-                                        center_x = (pdf_width - header_width) / 2
-                                        c.drawString(center_x, header_y, header_text)
-                                        print(f"[Reconstructor] Rendered page number on new text page: {header_text}")
-                                        c.setFont(self.font_name, font_size)
-                                        current_y = header_y - 20
-                                        at_page_top = False
-                                        # Recalculate para height with new current_y
-                                        para_height = para_obj.wrap(para_width, pdf_height)[1]
-                                # Draw paragraph at correct position (no extra indentation)
-                                print(f"[Reconstructor] Drawing paragraph at x={section_margin_left}, y={current_y - para_height}, width={para_width:.1f}, height={para_height:.1f}")
-                                para_obj.drawOn(c, section_margin_left, current_y - para_height)
-                                current_y -= (para_height + line_height * 0.3)  # Space after paragraph
-                            except Exception as e:
-                                print(f"[Reconstructor] Error rendering paragraph with ReportLab Paragraph: {e}")
-                                # Fallback to simple text rendering
-                                words = block.split()
-                                current_line_words = []
-                                for word in words:
-                                    test_line = ' '.join(current_line_words + [word])
-                                    text_width = c.stringWidth(test_line, self.font_name, font_size)
-                                    if text_width <= section_max_width:
-                                        current_line_words.append(word)
-                                    else:
-                                        if current_line_words:
-                                            c.drawString(section_margin_left, current_y, ' '.join(current_line_words))
-                                            current_y -= line_height
-                                            if current_y < 80:
-                                                c.showPage()
-                                                c.setFillColorRGB(1, 1, 1)
-                                                c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
-                                                c.setFillColor(black)
-                                                c.setFont(self.font_name, font_size)
-                                                current_y = pdf_height - 80
-                                                at_page_top = True
-                                        current_line_words = [word]
-                                if current_line_words:
-                                    c.drawString(section_margin_left, current_y, ' '.join(current_line_words))
-                                    current_y -= line_height
-                                # Space between paragraphs
-                                current_y -= line_height * 0.3
-                
-                # Render the side diagram, if any
-                if side_diag:
-                    diag_y_top = current_y + (paragraph_index - start_para_idx) * (line_height * 2) # rough estimate of top
-                    # Actually, we want to render it at the Y band where it was on the original page
-                    # if possible, or relative to the current text block.
-                    # Best: Put it at the current_y but slightly up to align with the text block
-                    para_height = (paragraph_index - start_para_idx) * (line_height * 1.8)
-                    diag_render_y_top = current_y + para_height
-                    
-                    _render_diagram_at(
-                        side_diag, 
-                        c, 
-                        pdf_width, 
-                        pdf_height, 
-                        diag_render_y_top,
-                        translated_diagrams
-                    )
-
-                # After a text section, render one table and one chart if available
-                if table_queue:
-                    print(f"[Reconstructor] DEBUG: About to render table from queue ({len(table_queue)} remaining)")
-                    _render_table(table_queue.pop(0))
-                if chart_queue:
-                    _render_chart_placeholder(chart_queue.pop(0))
-                    
             elif section['type'] == 'diagram':
-                # Render using the unified helper
-                _render_diagram_at(
-                    section, 
-                    c, 
-                    pdf_width, 
-                    pdf_height, 
-                    current_y, 
-                    translated_diagrams
-                )
-                # Draw Legend if needed
-                if legend_items:
-                    current_y -= 10
-                    c.setFont(self.font_name_bold, 9)
-                    c.drawString(60, current_y, "Diagram Key:")
-                    current_y -= 12
-                    c.setFont(self.font_name, 8)
-                    
-                    for item in legend_items:
-                        if current_y < 80:
-                            c.showPage()
-                            current_y = pdf_height - 80
-                            c.setFont(self.font_name, 8)
-                        c.drawString(70, current_y, item)
-                        current_y -= 12
-                    
-                    legend_items = []
-                    current_y -= 10
+                _render_diagram_at(section, c, self.page_width, self.page_height, current_y, translated_diagrams, is_chart=False)
+            
+            elif section['type'] == 'chart':
+                _render_diagram_at(section, c, self.page_width, self.page_height, current_y, translated_charts, is_chart=True)
 
-        # If any remaining artifacts, render them at the end
-        while table_queue:
-            _render_table(table_queue.pop(0))
-        while chart_queue:
-            _render_chart_placeholder(chart_queue.pop(0))
-        
         c.save()
-        print(f"[OK] Smart layout PDF created: {output_path}")
         return output_path

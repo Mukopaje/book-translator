@@ -19,6 +19,7 @@ from text_overlay import TextOverlay
 from pdf_reconstructor import PDFPageReconstructor
 from smart_layout_reconstructor import SmartLayoutReconstructor
 from diagram_translator import DiagramTranslator
+from chart_translator import ChartTranslator
 from agents.table_agent import TableAgent
 from agents.chart_agent import ChartAgent
 from agents.diagram_agent import DiagramAgent
@@ -105,11 +106,13 @@ class BookTranslator:
                 layout = smart_reconstructor._analyze_layout_structure(text_boxes)
                 
             diagram_regions = layout.get('diagram_regions', [])
+            chart_regions = layout.get('chart_regions', [])
             
-            # Filter out diagram text to build the "Cleaned" prose for translation
+            # Filter out diagram/chart text to build the "Cleaned" prose for translation
             cleaned_japanese_list = []
             for box in text_boxes:
                 inside_any_diagram = False
+                # Check diagrams
                 for region in diagram_regions:
                     if (box['x'] >= region['x'] - 5 and 
                         box['y'] >= region['y'] - 5 and 
@@ -117,6 +120,16 @@ class BookTranslator:
                         box['y'] + box['h'] <= region['y'] + region['h'] + 5):
                         inside_any_diagram = True
                         break
+                # Check charts
+                if not inside_any_diagram:
+                    for region in chart_regions:
+                        if (box['x'] >= region['x'] - 5 and 
+                            box['y'] >= region['y'] - 5 and 
+                            box['x'] + box['w'] <= region['x'] + region['w'] + 5 and 
+                            box['y'] + box['h'] <= region['y'] + region['h'] + 5):
+                            inside_any_diagram = True
+                            break
+                            
                 if not inside_any_diagram and box.get('text'):
                     cleaned_japanese_list.append(box['text'])
             
@@ -124,6 +137,7 @@ class BookTranslator:
             
             if verbose:
                 print(f"  + Found {len(diagram_regions)} diagram region(s)")
+                print(f"  + Found {len(chart_regions)} chart region(s)")
                 print(f"  + Extracted {len(japanese_text)} characters for prose translation")
 
             # Step 2: Translation with Context
@@ -146,12 +160,9 @@ class BookTranslator:
             if verbose:
                 print(f"\n[4/6] Creating clean translated PDF with smart layout...")
             
-            # Use the layout we already computed
-            # pdf_path and smart_reconstructor are already set up
             pdf_path = f"{self.output_dir}/{self.page_name}_translated.pdf"
             
             # Simplified text box construction since we already have text_boxes from OCR
-            # Just add empty translation strings to them for the reconstructor
             for box in text_boxes:
                 box['translation'] = ''
             
@@ -162,29 +173,27 @@ class BookTranslator:
             import traceback
             try:
                 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-                import time
                 
                 def run_table_detection():
                     table_agent = TableAgent()
-                    chart_agent = ChartAgent()
-                    
-                    # Filter out boxes that are inside diagrams to avoid false positive tables
+                    # Filter out boxes inside diagrams/charts
                     non_diagram_boxes = []
                     for box in text_boxes:
-                        inside_diagram = False
-                        for region in diagram_regions:
-                            # Simple hit test with 5px tolerance
+                        inside = False
+                        for region in diagram_regions + chart_regions:
                             if (box['x'] >= region['x'] - 5 and 
                                 box['y'] >= region['y'] - 5 and 
                                 box['x'] + box['w'] <= region['x'] + region['w'] + 5 and 
                                 box['y'] + box['h'] <= region['y'] + region['h'] + 5):
-                                inside_diagram = True
+                                inside = True
                                 break
-                        if not inside_diagram:
+                        if not inside:
                             non_diagram_boxes.append(box)
                     
                     tables = table_agent.detect_and_extract(self.image_path, non_diagram_boxes, self.translator, self.book_context)
-                    charts = chart_agent.from_tables(tables)
+                    # We are using dedicated Chart pipeline now, so ChartAgent is less critical for rendering images
+                    # but maybe useful for data extraction? For now, empty list to rely on visual ChartTranslator.
+                    charts = [] 
                     return tables, charts
                 
                 # Run with 90 second timeout
@@ -197,9 +206,7 @@ class BookTranslator:
                             print(f"    ! Table detection timed out (>90s), setting tables and charts to empty lists.")
                         tables, charts = [], []
                 if verbose:
-                    print(f"    + Found {len(tables)} tables and {len(charts)} charts.")
-                    for i, t in enumerate(tables):
-                        print(f"      [Table {i}] {t.id} rows={t.rows} cols={t.cols} bbox={t.bbox.x},{t.bbox.y}")
+                    print(f"    + Found {len(tables)} tables and {len(charts)} charts (agent-based).")
                     
             except Exception as e:
                 if verbose:
@@ -215,8 +222,7 @@ class BookTranslator:
             if diagram_regions:
                 if verbose:
                     print(f"\n[4b/6] Translating diagram labels...")
-                # Use enhanced processing mode for crisp diagrams with
-                # a clean white background.
+                # Use enhanced processing mode for crisp diagrams
                 diagram_translator = DiagramTranslator(processing_mode="enhanced")
                 diagram_output_dir = f"{self.output_dir}/diagrams"
                 translated_diagrams = diagram_translator.process_diagrams(
@@ -228,8 +234,25 @@ class BookTranslator:
                 )
                 if verbose:
                     print(f"  + Translated {len(translated_diagrams)} diagram(s)")
+
+            # Step 4c: Translate charts if found (Dedicated Pipeline)
+            translated_charts = None
+            if chart_regions:
+                if verbose:
+                    print(f"\n[4c/6] Translating chart labels...")
+                chart_translator = ChartTranslator()
+                chart_output_dir = f"{self.output_dir}/charts"
+                translated_charts = chart_translator.process_charts(
+                    self.image_path,
+                    chart_regions,
+                    self.translator,
+                    chart_output_dir,
+                    book_context=self.book_context
+                )
+                if verbose:
+                    print(f"  + Translated {len(translated_charts)} charts(s)")
             
-            # Normalize diagram artifacts for downstream use (not yet used in PDF composer)
+            # Normalize diagram artifacts
             try:
                 diagram_artifacts = DiagramAgent().from_translated_diagrams(translated_diagrams)
             except Exception as e:
@@ -254,7 +277,6 @@ class BookTranslator:
                 except Exception as e:
                     if verbose:
                         print(f"  ! Paragraph organization failed: {e}, using original paragraphs")
-                    # Continue with original paragraphs if organization fails
             
             # Create the PDF with smart layout
             diagram_render_capture = []
@@ -266,20 +288,20 @@ class BookTranslator:
                     print(f"  + Reconstructing PDF page with {len(translated_paragraphs)} paragraphs...")
                 
                 # Build full page Japanese text for page number extraction
-                # Include ALL text boxes (not just cleaned) to get page number
                 full_page_japanese = "\n".join([box.get('text', '') for box in text_boxes if box.get('text')])
                 
                 smart_reconstructor.reconstruct_pdf(
                     text_boxes, 
                     pdf_path, 
-                    translated_paragraphs=translated_paragraphs, # Pass pre-translated text
+                    translated_paragraphs=translated_paragraphs, 
                     translated_diagrams=translated_diagrams,
-                    full_page_japanese=full_page_japanese,  # Pass for page number extraction
+                    translated_charts=translated_charts, # PASS CHARTS
+                    full_page_japanese=full_page_japanese,
                     book_context=self.book_context,
                     table_artifacts=tables,
                     chart_artifacts=charts,
                     render_capture=diagram_render_capture,
-                    layout=layout  # Pass the pre-computed AI layout!
+                    layout=layout 
                 )
                 
                 # Verify PDF was actually created
@@ -308,14 +330,15 @@ class BookTranslator:
             if pdf_creation_error:
                 results['steps']['pdf_creation']['error'] = pdf_creation_error
             
-            # Record artifact summary for visibility (MVP only).
+            # Record artifact summary
             results['steps']['artifacts'] = {
                 'tables': len(tables),
                 'charts': len(charts),
                 'diagrams': len(diagram_artifacts),
+                'visual_charts': len(translated_charts) if translated_charts else 0
             }
             
-            # Provide serializable artifact details for persistence
+            # Provide serializable artifact details
             try:
                 results['steps']['artifact_details'] = {
                     'tables': artifacts_to_dict(tables),
@@ -326,42 +349,23 @@ class BookTranslator:
             except Exception as e:
                 if verbose:
                     print(f"    ! Artifact serialization error: {e}")
-                # Don't fail the whole process for artifact serialization errors
             
             if pdf_creation_success:
                 if verbose:
                     print(f"  + Smart layout PDF created: {pdf_path}")
             else:
-                # PDF creation failed - this should cause overall failure
                 error_msg = pdf_creation_error or "PDF creation failed for unknown reason"
                 raise Exception(f"PDF creation failed: {error_msg}")
 
-            # Step 4c: Create Preview Image (Disabled per user request)
-            # if verbose:
-            #     print(f"\n[4c/6] Creating preview image...")
-            # try:
-            #     preview_path = f"{self.output_dir}/{self.page_name}_translated.jpg"
-            #     overlay = TextOverlay(self.image_path)
-            #     # Use the existing translator
-            #     overlay.overlay_boxes_with_translation(self.translator, output_path=preview_path)
-            #     
-            #     if verbose:
-            #         print(f"  + Preview image created: {preview_path}")
-            # except Exception as e:
-            #     print(f"  ! Preview image creation failed: {e}")
-            #     # Don't fail the whole process for a preview
-            
             # Step 5: Save Results
             if verbose:
                 print(f"\n[5/6] Saving translation results...")
             
-            # Save Japanese text
             self.text_extractor.save_ocr_results(
                 japanese_text,
                 f"{self.output_dir}/{self.page_name}_japanese.txt"
             )
             
-            # Save translation
             self.translator.save_translation(
                 japanese_text,
                 english_text,
@@ -388,6 +392,7 @@ class BookTranslator:
                 print(f"Japanese text: {len(japanese_text)} characters")
                 print(f"English text: {len(english_text)} characters")
                 print(f"Diagrams processed: {len(diagram_regions) if diagram_regions else 0}")
+                print(f"Charts processed: {len(chart_regions) if chart_regions else 0}")
                 print(f"Output directory: {self.output_dir}/")
             
             results['success'] = True
@@ -431,16 +436,13 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate input file
     if not os.path.exists(args.input):
         print(f"Error: Input file not found: {args.input}")
         sys.exit(1)
     
-    # Create translator and process
     translator = BookTranslator(args.input, args.output)
     results = translator.process_page(verbose=not args.quiet)
     
-    # Exit with appropriate code
     sys.exit(0 if results['success'] else 1)
 
 

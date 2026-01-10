@@ -47,21 +47,23 @@ class LayoutAgent:
             
             Identify and return bounding boxes for the following semantic regions:
             1. "text_block": Main prose text (paragraphs, lists). NOT labels inside diagrams.
-            2. "diagram": Technical drawings, schematics, charts, graphs. IMPORTANT: Include ALL associated labels, callouts, and keys/legends within this box. If a diagram has labels around it, draw the box wide enough to include them.
-            3. "table": Structured data tables with rows/columns.
-            4. "header_footer": Page numbers, running titles.
-            5. "caption": Text explicitly describing a figure or table (usually starts with "Fig" or "Table").
+            2. "technical_diagram": Engineering drawings, schematics, cross-sections (e.g. engine parts). IMPORTANT: Include ALL associated labels, callouts, and keys/legends within this box.
+            3. "chart": Data visualization, graphs with X/Y axes, line plots, bar charts. IMPORTANT: Include the axes labels and titles within the box.
+            4. "table": Structured data tables with rows/columns.
+            5. "header_footer": Page numbers, running titles.
+            6. "caption": Text explicitly describing a figure or table (usually starts with "Fig" or "Table").
             
             CRITICAL: 
+            - Distinguish between "technical_diagram" (schematic) and "chart" (data plot).
             - Distinguish between "text_block" (prose) and "diagram labels" (short text pointing to parts). 
-            - Diagram labels MUST be included inside the "diagram" region box. Do NOT mark them as "text_block".
-            - If a page is mostly a large diagram with many labels, return one large "diagram" region that covers them all.
+            - Diagram labels MUST be included inside the "technical_diagram" or "chart" region box. Do NOT mark them as "text_block".
+            - If a page is mostly a large diagram with many labels, return one large "technical_diagram" region that covers them all.
             
             Output strictly valid JSON with this structure:
             {
                 "regions": [
                     {
-                        "type": "diagram" | "text_block" | "table" | "header_footer" | "caption",
+                        "type": "technical_diagram" | "chart" | "text_block" | "table" | "header_footer" | "caption",
                         "box_2d": [ymin, xmin, ymax, xmax],  // Normalized coordinates (0-1000)
                         "confidence": 0-1.0
                     }
