@@ -345,6 +345,15 @@ class DiagramTranslator:
                 # But be careful with dimensions!
                 center_y = y + h / 2.0
                 diag_height = diagram.height
+                
+                # Check top and bottom edges for leaked body text
+                is_top_edge = y < 5
+                is_bottom_edge = (y + h) > (diag_height - 5)
+                
+                if (is_top_edge or is_bottom_edge) and len(english_text) > 10:
+                    print(f"    Skipping likely-leaked body text at edge: '{english_text}'")
+                    continue
+
                 if diag_height and center_y > diag_height * 0.9 and len(english_text) > 20: # Keep short ones
                     print(f"    Skipping likely-leaked body text: '{english_text}'")
                     continue

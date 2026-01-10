@@ -98,7 +98,7 @@ class SmartLayoutReconstructor:
             
             if has_neighbor:
                 paragraph_boxes.append(box)
-            elif box['w'] > page_width * 0.15: # Also keep slightly shorter but isolated lines
+            elif box['w'] > page_width * 0.25: # Increased threshold from 0.15 to 0.25 for isolated lines
                 paragraph_boxes.append(box)
             
             # Note: Short, isolated text is likely a diagram label and is filtered out
@@ -128,7 +128,15 @@ class SmartLayoutReconstructor:
         last_bottom = 0
         gap_threshold = 120  # pixels - slightly more conservative
         
-        for box in sorted_boxes_all:
+        # Use filtered_boxes for main structure detection to avoid labels breaking diagrams
+        # But we must ensure we don't miss any critical text.
+        # Fallback: if filtered_boxes is empty but text_boxes isn't, use text_boxes
+        boxes_to_analyze = filtered_boxes if filtered_boxes else text_boxes
+        
+        # We need them sorted by Y
+        boxes_to_analyze = sorted(boxes_to_analyze, key=lambda b: (b['y'], b['x']))
+        
+        for box in boxes_to_analyze:
             box_top = box['y']
             gap = box_top - last_bottom
             
@@ -865,51 +873,36 @@ class SmartLayoutReconstructor:
                 diagram_width_pdf = (pdf_width - 120) * 0.4
                 scale = diagram_width_pdf / diagram_image.width if diagram_image.width > 0 else 1.0
                 diagram_height_pdf = diagram_image.height * scale
-                
                 if side == 'right':
                     diagram_x = pdf_width - 60 - diagram_width_pdf
                 else: # left
                     diagram_x = 60
-                
                 # Use render_y_top (aligned with text block)
                 diagram_y = render_y_top - diagram_height_pdf
             else:
                 # Full-width diagram - use actual diagram image dimensions for proper scaling
                 diagram_width_pdf = pdf_width - 120
                 scale = 1.0  # Initialize scale to avoid NameError
-                
                 if diagram_image.width > 0 and diagram_image.height > 0:
                     # Calculate scale based on width constraint
                     scale_width = diagram_width_pdf / diagram_image.width
                     # Calculate resulting height
                     diagram_height_pdf = diagram_image.height * scale_width
-                    
                     # Check if diagram fits on current page
                     available_height = current_y - 80  # Space from current_y to bottom margin
                     max_page_height = pdf_height - 160  # Maximum diagram height on a page (top+bottom margins)
-                    
-                    # If diagram doesn't fit on current page, check if we should:
-                    # 1. Start new page if there's significant content above (not at top)
-                    # 2. Shrink to fit current page if at top or diagram is too large for any page
-                    
+                    # If diagram doesn't fit on current page, always start a new page unless at top
                     if diagram_height_pdf > available_height:
-                        # Check if diagram is too large even for a fresh page
+                        # If diagram is too large for a fresh page, shrink to fit
                         if diagram_height_pdf > max_page_height:
-                            # Diagram is too large even for a fresh page - shrink to fit
                             scale_height = max_page_height / diagram_image.height
                             scale = min(scale_width, scale_height)
                             diagram_height_pdf = diagram_image.height * scale
                             diagram_width_pdf = diagram_image.width * scale
                             print(f"[Reconstructor] Diagram too large for any page, shrinking to fit: {diagram_width_pdf:.1f}x{diagram_height_pdf:.1f}")
-                        # Only start new page if:
-                        # 1. We're NOT at top of page (have significant content above)
-                        # 2. Available space is very limited (<20% of page)
-                        # 3. Shrinking would make diagram too small (<60% of original size)
-                        elif (not at_page_top and 
-                              available_height < max_page_height * 0.2 and
-                              (available_height / diagram_image.height) < 0.6):
-                            # Start new page only if shrinking would make it too small
-                            print(f"[Reconstructor] Starting new page for diagram (available={available_height:.1f}, would shrink to {(available_height/diagram_image.height)*100:.1f}%)")
+                        else:
+                            # Always start a new page for large diagrams
+                            print(f"[Reconstructor] Starting new page for diagram (available={available_height:.1f})")
                             c.showPage()
                             c.setFillColorRGB(1, 1, 1)
                             c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
@@ -917,7 +910,6 @@ class SmartLayoutReconstructor:
                             c.setFont(self.font_name, font_size)
                             current_y = pdf_height - 80
                             at_page_top = True
-                            
                             # Render page number on new page if available
                             if page_number is not None:
                                 header_text = f"Page {page_number}"
@@ -930,7 +922,6 @@ class SmartLayoutReconstructor:
                                 c.setFont(self.font_name, font_size)
                                 current_y = header_y - 20  # Space below page number
                                 at_page_top = False
-                            
                             # Recalculate with new current_y
                             available_height = current_y - 80
                             # Recalculate scale for new page
@@ -941,14 +932,6 @@ class SmartLayoutReconstructor:
                                 diagram_height_pdf = diagram_image.height * scale
                                 diagram_width_pdf = diagram_image.width * scale
                                 print(f"[Reconstructor] Diagram on new page: {diagram_width_pdf:.1f}x{diagram_height_pdf:.1f}")
-                        else:
-                            # Shrink to fit current page (preferred approach)
-                            scale_height = available_height / diagram_image.height
-                            scale = min(scale_width, scale_height)
-                            diagram_height_pdf = diagram_image.height * scale
-                            diagram_width_pdf = diagram_image.width * scale
-                            shrink_percent = (scale / scale_width) * 100
-                            print(f"[Reconstructor] Shrinking diagram to fit current page: {diagram_width_pdf:.1f}x{diagram_height_pdf:.1f} ({shrink_percent:.1f}% of original size)")
                     else:
                         # Diagram fits - use width-based scale
                         scale = scale_width
@@ -958,22 +941,32 @@ class SmartLayoutReconstructor:
                     diagram_height_pdf = section_height if section_height > 0 else 200
                     if diagram_image.width > 0:
                         diagram_width_pdf = diagram_image.width * scale
-                
                 # Position diagram
                 diagram_y = current_y - diagram_height_pdf
                 diagram_x = (pdf_width - diagram_width_pdf) / 2
-                
                 # Ensure diagram doesn't go below bottom margin
                 if diagram_y < 80:
-                    print(f"[Reconstructor] Warning: Diagram would overflow bottom margin (y={diagram_y:.1f}), adjusting...")
-                    diagram_y = 80
-                    # Recalculate height to fit
-                    available_from_top = current_y - 80
-                    if available_from_top > 0:
-                        scale_height = available_from_top / diagram_image.height
-                        scale = min(scale, scale_height)
-                        diagram_height_pdf = diagram_image.height * scale
-                        diagram_width_pdf = diagram_image.width * scale
+                    print(f"[Reconstructor] Diagram would overflow bottom margin (y={diagram_y:.1f}), starting new page.")
+                    c.showPage()
+                    c.setFillColorRGB(1, 1, 1)
+                    c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
+                    c.setFillColor(black)
+                    c.setFont(self.font_name, font_size)
+                    current_y = pdf_height - 80
+                    at_page_top = True
+                    if page_number is not None:
+                        header_text = f"Page {page_number}"
+                        c.setFont(self.font_name, 11)
+                        header_width = c.stringWidth(header_text, self.font_name, 11)
+                        header_y = pdf_height - 40
+                        center_x = (pdf_width - header_width) / 2
+                        c.drawString(center_x, header_y, header_text)
+                        print(f"[Reconstructor] Rendered page number on new diagram page: {header_text}")
+                        c.setFont(self.font_name, font_size)
+                        current_y = header_y - 20
+                        at_page_top = False
+                    # Recalculate diagram_y after new page
+                    diagram_y = current_y - diagram_height_pdf
 
             # Draw the image - use preserveAspectRatio and better quality settings
             # Convert to RGB if needed for better rendering quality
@@ -1182,82 +1175,81 @@ class SmartLayoutReconstructor:
                             textColor=colors.black,
                         )
                         
-                        # Wrap paragraph in HTML for proper rendering
-                        # Escape any HTML-like content that might interfere
+                        # Improved paragraph grouping and text organization
+                        import html
                         para_text_clean = para_text.strip()
-                        para_html = para_text_clean.replace('\n', '<br/>').replace('<', '&lt;').replace('>', '&gt;')
-                        
-                        try:
-                            para_obj = RParagraph(para_html, para_style)
-                            
-                            # Calculate height needed for this paragraph
-                            para_width = section_max_width
-                            para_height = para_obj.wrap(para_width, pdf_height)[1]
-                            
-                            # Check if we need a new page
-                            if current_y - para_height < 80:
-                                c.showPage()
-                                c.setFillColorRGB(1, 1, 1)
-                                c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
-                                c.setFillColor(black)
-                                c.setFont(self.font_name, font_size)
-                                current_y = pdf_height - 80
-                                at_page_top = True
-                                
-                                # Render page number on new page if available
-                                if page_number is not None and at_page_top:
-                                    header_text = f"Page {page_number}"
-                                    c.setFont(self.font_name, 11)
-                                    header_width = c.stringWidth(header_text, self.font_name, 11)
-                                    header_y = pdf_height - 40
-                                    center_x = (pdf_width - header_width) / 2
-                                    c.drawString(center_x, header_y, header_text)
-                                    print(f"[Reconstructor] Rendered page number on new text page: {header_text}")
+                        # Remove literal HTML tags (e.g., <p>, <div>, <br>, etc.)
+                        para_text_no_html = re.sub(r'<\s*br\s*/?>', '\n', para_text_clean, flags=re.IGNORECASE)
+                        para_text_no_html = re.sub(r'<[^>]+>', '', para_text_no_html)
+                        # Split on double newlines for paragraph breaks
+                        para_blocks = [block.strip() for block in re.split(r'\n\s*\n', para_text_no_html) if block.strip()]
+                        for block in para_blocks:
+                            # Replace single newlines with <br/> for line breaks
+                            block = block.replace('\\n', '\n').replace('\n', '<br/>')
+                            # Escape any remaining HTML special chars
+                            para_html = html.escape(block, quote=False)
+                            # Unescape <br/> so ReportLab can use it for line breaks
+                            para_html = para_html.replace('&lt;br/&gt;', '<br/>')
+                            try:
+                                para_obj = RParagraph(para_html, para_style)
+                                # Calculate height needed for this paragraph
+                                para_width = section_max_width
+                                para_height = para_obj.wrap(para_width, pdf_height)[1]
+                                # Check if we need a new page
+                                if current_y - para_height < 80:
+                                    c.showPage()
+                                    c.setFillColorRGB(1, 1, 1)
+                                    c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
+                                    c.setFillColor(black)
                                     c.setFont(self.font_name, font_size)
-                                    current_y = header_y - 20
-                                    at_page_top = False
-                                    # Recalculate para height with new current_y
-                                    para_height = para_obj.wrap(para_width, pdf_height)[1]
-                            
-                            # Draw paragraph at correct position (no extra indentation)
-                            print(f"[Reconstructor] Drawing paragraph at x={section_margin_left}, y={current_y - para_height}, width={para_width:.1f}, height={para_height:.1f}")
-                            para_obj.drawOn(c, section_margin_left, current_y - para_height)
-                            current_y -= (para_height + line_height * 0.3)  # Space after paragraph
-                            
-                        except Exception as e:
-                            print(f"[Reconstructor] Error rendering paragraph with ReportLab Paragraph: {e}")
-                            # Fallback to simple text rendering
-                            words = para_text.split()
-                            current_line_words = []
-                            
-                            for word in words:
-                                test_line = ' '.join(current_line_words + [word])
-                                text_width = c.stringWidth(test_line, self.font_name, font_size)
-                                
-                                if text_width <= section_max_width:
-                                    current_line_words.append(word)
-                                else:
-                                    if current_line_words:
-                                        c.drawString(section_margin_left, current_y, ' '.join(current_line_words))
-                                        current_y -= line_height
-                                        
-                                        if current_y < 80:
-                                            c.showPage()
-                                            c.setFillColorRGB(1, 1, 1)
-                                            c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
-                                            c.setFillColor(black)
-                                            c.setFont(self.font_name, font_size)
-                                            current_y = pdf_height - 80
-                                            at_page_top = True
-                                    
-                                    current_line_words = [word]
-                            
-                            if current_line_words:
-                                c.drawString(section_margin_left, current_y, ' '.join(current_line_words))
-                                current_y -= line_height
-                            
-                            # Space between paragraphs
-                            current_y -= line_height * 0.3
+                                    current_y = pdf_height - 80
+                                    at_page_top = True
+                                    # Render page number on new page if available
+                                    if page_number is not None and at_page_top:
+                                        header_text = f"Page {page_number}"
+                                        c.setFont(self.font_name, 11)
+                                        header_width = c.stringWidth(header_text, self.font_name, 11)
+                                        header_y = pdf_height - 40
+                                        center_x = (pdf_width - header_width) / 2
+                                        c.drawString(center_x, header_y, header_text)
+                                        print(f"[Reconstructor] Rendered page number on new text page: {header_text}")
+                                        c.setFont(self.font_name, font_size)
+                                        current_y = header_y - 20
+                                        at_page_top = False
+                                        # Recalculate para height with new current_y
+                                        para_height = para_obj.wrap(para_width, pdf_height)[1]
+                                # Draw paragraph at correct position (no extra indentation)
+                                print(f"[Reconstructor] Drawing paragraph at x={section_margin_left}, y={current_y - para_height}, width={para_width:.1f}, height={para_height:.1f}")
+                                para_obj.drawOn(c, section_margin_left, current_y - para_height)
+                                current_y -= (para_height + line_height * 0.3)  # Space after paragraph
+                            except Exception as e:
+                                print(f"[Reconstructor] Error rendering paragraph with ReportLab Paragraph: {e}")
+                                # Fallback to simple text rendering
+                                words = block.split()
+                                current_line_words = []
+                                for word in words:
+                                    test_line = ' '.join(current_line_words + [word])
+                                    text_width = c.stringWidth(test_line, self.font_name, font_size)
+                                    if text_width <= section_max_width:
+                                        current_line_words.append(word)
+                                    else:
+                                        if current_line_words:
+                                            c.drawString(section_margin_left, current_y, ' '.join(current_line_words))
+                                            current_y -= line_height
+                                            if current_y < 80:
+                                                c.showPage()
+                                                c.setFillColorRGB(1, 1, 1)
+                                                c.rect(0, 0, pdf_width, pdf_height, fill=1, stroke=0)
+                                                c.setFillColor(black)
+                                                c.setFont(self.font_name, font_size)
+                                                current_y = pdf_height - 80
+                                                at_page_top = True
+                                        current_line_words = [word]
+                                if current_line_words:
+                                    c.drawString(section_margin_left, current_y, ' '.join(current_line_words))
+                                    current_y -= line_height
+                                # Space between paragraphs
+                                current_y -= line_height * 0.3
                 
                 # Render the side diagram, if any
                 if side_diag:
