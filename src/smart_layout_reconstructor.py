@@ -17,6 +17,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY
 import os
 import re
+import html
 
 
 class SmartLayoutReconstructor:
@@ -83,7 +84,13 @@ class SmartLayoutReconstructor:
                 
             # Criteria 2: Connectivity (Vertical neighbors)
             has_neighbor = False
-            v_thresh = box['h'] * 3.0  # Increased threshold to 3.0
+            
+            # Dynamic threshold: stricter for short text to avoid connecting diagram labels
+            # Long text (paragraphs) can have larger gaps (paragraph breaks).
+            # Short text (labels) must be tight (e.g. a bullet list) to be considered text flow.
+            # If short text is spaced out (> 1.5 line heights), it's likely labels on a diagram.
+            is_short = box['w'] < page_width * 0.2
+            v_thresh = box['h'] * (1.5 if is_short else 3.0)
             
             for j, other in enumerate(sorted_boxes):
                 if i == j: continue
@@ -91,10 +98,24 @@ class SmartLayoutReconstructor:
                 # Check if 'other' is vertically close
                 y_dist = abs(box['y'] - other['y'])
                 if y_dist > 0 and y_dist < v_thresh:
-                    # If they are vertically close, they are likely part of the same text flow
-                    # No longer requiring horizontal overlap as list markers are often offset
-                    has_neighbor = True
-                    break
+                    # STRICTER CHECK: To be a paragraph neighbor, it must also be:
+                    # 1. Horizontally close (same column) OR
+                    # 2. Horizontally aligned (bullet list)
+                    
+                    # Horizontal overlap or proximity
+                    x_dist = abs(box['x'] - other['x'])
+                    # Check if they visually overlap in X (one is above the other)
+                    overlap_x = max(0, min(box['x'] + box['w'], other['x'] + other['w']) - max(box['x'], other['x']))
+                    is_vertically_stacked = overlap_x > min(box['w'], other['w']) * 0.3
+                    
+                    # Check for left-alignment (typical for lists/paragraphs)
+                    is_left_aligned = abs(box['x'] - other['x']) < 30
+                    
+                    # If they are just randomly near each other in Y but far apart in X (like diagram labels),
+                    # they are NOT paragraph neighbors.
+                    if is_vertically_stacked or is_left_aligned:
+                        has_neighbor = True
+                        break
             
             if has_neighbor:
                 paragraph_boxes.append(box)
@@ -158,8 +179,37 @@ class SmartLayoutReconstructor:
                 gap_end = box_top
                 gap_boxes = [b for b in text_boxes if gap_start < b['y'] < gap_end]
                 
-                # DIAGRAM VETO: If there are many text boxes in the gap, it's not a diagram
-                if len(gap_boxes) < 8: # Very strict - diagrams should be mostly empty of OCR text
+                # DIAGRAM VETO: If there are many text boxes in the gap, it MIGHT not be a diagram.
+                # HOWEVER, charts often have many small labels (numbers, axis text).
+                # We should only veto if the text looks like "Prose" (long sentences).
+                
+                is_diagram = True
+                if len(gap_boxes) >= 8:
+                    # Analyze the content of the boxes
+                    long_text_count = 0
+                    total_chars = 0
+                    
+                    for b in gap_boxes:
+                        text = b.get('text', '').strip()
+                        total_chars += len(text)
+                        # A box with > 15 chars is likely part of a sentence/paragraph
+                        # (Diagram labels are usually short: "Fig 1", "500", "Valve")
+                        if len(text) > 15:
+                            long_text_count += 1
+                    
+                    # Heuristic:
+                    # If more than 30% of boxes are "long", it's likely a text paragraph we missed.
+                    # Or if the average length is high.
+                    avg_len = total_chars / len(gap_boxes) if gap_boxes else 0
+                    long_ratio = long_text_count / len(gap_boxes)
+                    
+                    if long_ratio > 0.3 or avg_len > 20:
+                        is_diagram = False
+                        print(f"  [Layout] Vetoed diagram candidate at Y={gap_start}-{gap_end}: Too much prose (avg_len={avg_len:.1f}, long_ratio={long_ratio:.2f})")
+                    else:
+                        print(f"  [Layout] Accepted diagram candidate at Y={gap_start}-{gap_end} despite {len(gap_boxes)} boxes (likely chart/labels)")
+
+                if is_diagram:
                     page_sections.append({
                         'type': 'diagram',
                         'y_start': gap_start,
@@ -168,6 +218,20 @@ class SmartLayoutReconstructor:
                         'x': 0,
                         'w': self.width
                     })
+                else:
+                    # It was rejected as a diagram, so treat it as text flow
+                    # We need to append these boxes to the previous text section or start a new one?
+                    # Actually, the logic above splits sections based on gaps.
+                    # If we reject this gap as a diagram, it effectively means the gap wasn't "real"
+                    # in terms of structure, but we already closed the previous section.
+                    # So we should create a new text section for this "gap" content.
+                    if gap_boxes:
+                        page_sections.append({
+                            'type': 'text',
+                            'boxes': gap_boxes,
+                            'y_start': gap_start,
+                            'y_end': gap_end
+                        })
                 
                 current_section_boxes = [box]
             else:
@@ -282,6 +346,19 @@ class SmartLayoutReconstructor:
                         prev['height'] = prev['y_end'] - prev['y_start']
                         continue
 
+                # NEW: Merge Diagram -> Small Text (captions, axis labels)
+                if prev['type'] == 'diagram' and curr['type'] == 'text':
+                    # If text is short (likely a caption or axis numbers)
+                    text_height = curr['y_end'] - curr['y_start']
+                    if text_height < 80:  # Threshold for single/double line caption
+                        prev['y_end'] = curr['y_end']
+                        prev['height'] = prev['y_end'] - prev['y_start']
+                        # Add these boxes to the previous section so they are used for content bounds
+                        # But we don't strictly track boxes for diagram sections, just bounds.
+                        # The refinement step (using all boxes in band) will pick them up 
+                        # because we extended y_end.
+                        continue
+
                 merged_sections.append(curr)
         
         # Clean up diagram bounds: ensure they don't overwrite text
@@ -353,11 +430,7 @@ class SmartLayoutReconstructor:
                         'boxes': para,
                         'y_position': para[0]['y']
                     })
-        
-        # Identify diagram regions
-        diagram_regions = []
-        for section in merged_sections:
-            if section['type'] == 'diagram':
+            elif section['type'] == 'diagram':
                 diagram_regions.append({
                     'x': section.get('x', 0),
                     'y': section['y_start'],
@@ -367,7 +440,186 @@ class SmartLayoutReconstructor:
                 })
         
         return {'paragraphs': paragraphs, 'diagram_regions': diagram_regions, 'page_sections': merged_sections}
-    
+
+    def reconstruct_from_layout_analysis(self, layout_data, text_boxes):
+        """
+        Reconstruct layout using AI-detected regions instead of heuristics.
+        
+        Args:
+            layout_data: Dictionary from LayoutAgent with 'regions' list
+            text_boxes: List of OCR text boxes
+            
+        Returns:
+            Dict compatible with reconstruct_pdf expectation:
+            {'paragraphs': [], 'diagram_regions': [], 'page_sections': []}
+        """
+        print("[SmartLayout] Reconstructing from AI Layout Analysis...")
+        
+        regions = layout_data.get('regions', [])
+        page_sections = []
+        
+        # Sort regions top-to-bottom
+        regions.sort(key=lambda r: r['box_pixel']['y'])
+        
+        # 1. Map OCR boxes to Regions
+        # We need to know which text boxes belong to diagrams (labels) vs text blocks (paragraphs)
+        region_text_map = {id(r): [] for r in regions}
+        unassigned_boxes = []
+        
+        for box in text_boxes:
+            box_x = box['x']
+            box_y = box['y']
+            box_w = box['w']
+            box_h = box['h']
+            box_area = box_w * box_h
+            
+            best_region = None
+            max_intersection = 0
+            
+            for region in regions:
+                r_box = region['box_pixel']
+                
+                # Calculate intersection
+                ix = max(box_x, r_box['x'])
+                iy = max(box_y, r_box['y'])
+                iw = min(box_x + box_w, r_box['x'] + r_box['w']) - ix
+                ih = min(box_y + box_h, r_box['y'] + r_box['h']) - iy
+                
+                if iw > 0 and ih > 0:
+                    intersection = iw * ih
+                    # Calculate Intersection over Box Area (how much of the text box is inside the region)
+                    # We care if the text is inside the region, not if the region is inside the text.
+                    ioba = intersection / box_area
+                    
+                    if ioba > 0.5 and intersection > max_intersection:
+                        max_intersection = intersection
+                        best_region = region
+            
+            if best_region:
+                region_text_map[id(best_region)].append(box)
+            else:
+                unassigned_boxes.append(box)
+                
+        # 2. Build Page Sections
+        for region in regions:
+            rtype = region.get('type')
+            rbox = region.get('box_pixel')
+            
+            # REMOVED: Heuristic Reclassification Guards (Title/Density)
+            # We trust the AI output to be correct as per user request to revert.
+            
+            if rtype == 'diagram':
+                # Diagram Region: Use the AI bounding box with generous padding
+                # Charts often have labels (axis numbers, titles) just outside the main visual box.
+                # AI sometimes draws the box tight around the lines.
+                pad_x = 30
+                pad_y = 30
+                
+                # Apply padding and clamp to image dimensions
+                x_start = max(0, rbox['x'] - pad_x)
+                y_start = max(0, rbox['y'] - pad_y)
+                x_end = min(self.width, rbox['x'] + rbox['w'] + pad_x)
+                y_end = min(self.height, rbox['y'] + rbox['h'] + pad_y)
+                
+                page_sections.append({
+                    'type': 'diagram',
+                    'x': x_start,
+                    'y_start': y_start,
+                    'y_end': y_end,
+                    'w': x_end - x_start,
+                    'height': y_end - y_start,
+                    'boxes': region_text_map[id(region)] # These are labels!
+                })
+                print(f"  [Layout] Added Diagram at Y={y_start} (padded) with {len(region_text_map[id(region)])} labels")
+                
+            elif rtype == 'text_block' or rtype == 'caption' or rtype == 'header_footer':
+                # Text Region: Gather assigned boxes
+                assigned_boxes = region_text_map[id(region)]
+                if assigned_boxes:
+                    page_sections.append({
+                        'type': 'text',
+                        'boxes': assigned_boxes,
+                        'y_start': rbox['y'],
+                        'y_end': rbox['y'] + rbox['h']
+                    })
+                    print(f"  [Layout] Added Text Block at Y={rbox['y']} with {len(assigned_boxes)} boxes")
+            
+            elif rtype == 'table':
+                # Treat table similar to diagram for now (placeholder) or text if we want to translate cells
+                # Ideally, TableAgent handles this. For layout reconstruction, we might treat it as a 'diagram' placeholder
+                # if we don't have a rendered table artifact yet.
+                # For now, let's treat it as a diagram region so it gets cropped and preserved
+                page_sections.append({
+                    'type': 'diagram', # Preserve tables as images for now to avoid breaking
+                    'x': rbox['x'],
+                    'y_start': rbox['y'],
+                    'y_end': rbox['y'] + rbox['h'],
+                    'w': rbox['w'],
+                    'height': rbox['h'],
+                    'boxes': region_text_map[id(region)]
+                })
+                print(f"  [Layout] Added Table (as Diagram) at Y={rbox['y']}")
+
+        # 3. Handle Unassigned Boxes (orphans)
+        if unassigned_boxes:
+            # Simple fallback: ignore them to keep output clean, or add as text at end
+            pass
+
+        # 3b. MERGE ADJACENT DIAGRAMS (Fix for split diagrams/ghosts)
+        # If the AI detected multiple diagram boxes that are close together (e.g. Parts A and B, or Figure + Caption),
+        # merge them into one single diagram section to prevent splitting across pages.
+        merged_sections = []
+        if page_sections:
+            merged_sections.append(page_sections[0])
+            for i in range(1, len(page_sections)):
+                prev = merged_sections[-1]
+                curr = page_sections[i]
+                
+                # Check for Diagram -> Diagram merge
+                if prev['type'] == 'diagram' and curr['type'] == 'diagram':
+                    gap = curr['y_start'] - prev['y_end']
+                    # Merge if close (gap < 200) OR overlapping (gap < 0)
+                    if gap < 300: 
+                        print(f"  [Layout] Merging adjacent diagrams (gap={gap})...")
+                        # Expand bounds
+                        prev['y_end'] = max(prev['y_end'], curr['y_end'])
+                        prev['height'] = prev['y_end'] - prev['y_start']
+                        # Union of width/x
+                        new_x = min(prev['x'], curr['x'])
+                        new_right = max(prev['x'] + prev['w'], curr['x'] + curr['w'])
+                        prev['x'] = new_x
+                        prev['w'] = new_right - new_x
+                        # Merge text boxes
+                        prev['boxes'].extend(curr['boxes'])
+                        continue
+                
+                merged_sections.append(curr)
+        
+        page_sections = merged_sections
+
+        # 4. Generate Output Structure
+        paragraphs = []
+        diagram_regions = []
+        
+        for section in page_sections:
+            if section['type'] == 'text':
+                para_groups = self._group_into_paragraphs(section['boxes'])
+                for para in para_groups:
+                    paragraphs.append({
+                        'boxes': para,
+                        'y_position': para[0]['y']
+                    })
+            elif section['type'] == 'diagram':
+                diagram_regions.append({
+                    'x': section['x'],
+                    'y': section['y_start'],
+                    'w': section['w'],
+                    'h': section['height'],
+                    'position_in_flow': section['y_start']
+                })
+
+        return {'paragraphs': paragraphs, 'diagram_regions': diagram_regions, 'page_sections': page_sections}
+
     def _group_into_paragraphs(self, boxes):
         """Group text boxes into logical paragraphs based on positioning"""
         if not boxes:
@@ -460,7 +712,7 @@ class SmartLayoutReconstructor:
         
         return translations
     
-    def reconstruct_pdf(self, text_boxes, output_path, translator=None, full_page_japanese=None, translated_diagrams=None, book_context=None, table_artifacts=None, chart_artifacts=None, render_capture=None, translated_paragraphs=None):
+    def reconstruct_pdf(self, text_boxes, output_path, translator=None, full_page_japanese=None, translated_diagrams=None, book_context=None, table_artifacts=None, chart_artifacts=None, render_capture=None, translated_paragraphs=None, layout=None):
         """
         Intelligently reconstruct the PDF with proper layout
         """
@@ -520,7 +772,8 @@ class SmartLayoutReconstructor:
                             break
         
         # Analyze the layout
-        layout = self._analyze_layout_structure(text_boxes)
+        if not layout:
+            layout = self._analyze_layout_structure(text_boxes)
         
         print(f"  Found {len(layout['paragraphs'])} paragraphs")
         print(f"  Found {len(layout['diagram_regions'])} diagram regions")
@@ -639,6 +892,14 @@ class SmartLayoutReconstructor:
         paragraph_index = 0
         legend_items = []  # Initialize legend items list for diagram annotations
         
+        # Prepare artifact lists
+        table_queue = list(table_artifacts or [])
+        chart_queue = list(chart_artifacts or [])
+        print(f"[Reconstructor] DEBUG: Received {len(table_queue)} table artifacts, {len(chart_queue)} chart artifacts")
+        if table_queue:
+            for i, t in enumerate(table_queue):
+                print(f"[Reconstructor] DEBUG: Table {i}: {t.rows}x{t.cols} with {len(t.cells)} cells")
+
         # Helpers to render artifacts
         def _render_table(table_artifact):
             nonlocal current_y
@@ -1000,7 +1261,9 @@ class SmartLayoutReconstructor:
                     pdf_y = diagram_y + (diagram_image.height - orig_y - orig_h/2) * scale
                     
                     text = note['text']
-                    note_font_size = max(6, min(int(orig_h * 0.6 * scale), 10))
+                    # Adjust font sizing: allow smaller fonts for axis numbers to avoid "zoomed" look
+                    # Lower minimum from 6 to 4. Keep max at 10 (or 12 for clarity).
+                    note_font_size = max(4, min(int(orig_h * 0.7 * scale), 12))
                     text_width = c.stringWidth(text, self.font_name, note_font_size)
                     box_width_pdf = orig_w * scale
                     
@@ -1027,14 +1290,6 @@ class SmartLayoutReconstructor:
         def _render_chart_placeholder(artifact):
             # NO-OP: charts were requested to be removed to keep layout clean
             pass
-
-        # Prepare artifact lists
-        table_queue = list(table_artifacts or [])
-        chart_queue = list(chart_artifacts or [])
-        print(f"[Reconstructor] DEBUG: Received {len(table_queue)} table artifacts, {len(chart_queue)} chart artifacts")
-        if table_queue:
-            for i, t in enumerate(table_queue):
-                print(f"[Reconstructor] DEBUG: Table {i}: {t.rows}x{t.cols} with {len(t.cells)} cells")
 
         # Process each section in order
         print(f"[Reconstructor] Reconstructing PDF from {len(layout['page_sections'])} sections...")
@@ -1181,15 +1436,16 @@ class SmartLayoutReconstructor:
                         # Remove literal HTML tags (e.g., <p>, <div>, <br>, etc.)
                         para_text_no_html = re.sub(r'<\s*br\s*/?>', '\n', para_text_clean, flags=re.IGNORECASE)
                         para_text_no_html = re.sub(r'<[^>]+>', '', para_text_no_html)
+                        
                         # Split on double newlines for paragraph breaks
                         para_blocks = [block.strip() for block in re.split(r'\n\s*\n', para_text_no_html) if block.strip()]
+                        
                         for block in para_blocks:
-                            # Replace single newlines with <br/> for line breaks
-                            block = block.replace('\\n', '\n').replace('\n', '<br/>')
-                            # Escape any remaining HTML special chars
-                            para_html = html.escape(block, quote=False)
-                            # Unescape <br/> so ReportLab can use it for line breaks
-                            para_html = para_html.replace('&lt;br/&gt;', '<br/>')
+                            # 1. Escape HTML special chars first
+                            block_escaped = html.escape(block, quote=False)
+                            # 2. Replace newlines with <br/> for ReportLab
+                            para_html = block_escaped.replace('\\n', '<br/>').replace('\n', '<br/>')
+                            
                             try:
                                 para_obj = RParagraph(para_html, para_style)
                                 # Calculate height needed for this paragraph

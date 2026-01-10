@@ -22,6 +22,7 @@ from diagram_translator import DiagramTranslator
 from agents.table_agent import TableAgent
 from agents.chart_agent import ChartAgent
 from agents.diagram_agent import DiagramAgent
+from agents.layout_agent import LayoutAgent
 from artifacts.schemas import artifacts_to_dict
 
 
@@ -47,6 +48,7 @@ class BookTranslator:
         
         # Initialize components
         self.text_extractor = TextExtractor()
+        self.layout_agent = LayoutAgent()
         
         # Try Gemini first, fall back to Google Translate
         try:
@@ -86,7 +88,22 @@ class BookTranslator:
             
             # Use smart reconstructor to identify diagram/table regions early
             smart_reconstructor = SmartLayoutReconstructor(self.image_path)
-            layout = smart_reconstructor._analyze_layout_structure(text_boxes)
+            
+            # Phase 1: AI Layout Analysis (Gemini Vision)
+            if verbose:
+                print(f"  + Running AI Layout Analysis...")
+            
+            layout_result = self.layout_agent.detect_layout(self.image_path)
+            
+            if layout_result.get("success"):
+                if verbose:
+                    print(f"  + AI Layout Analysis successful. Reconstructing structure...")
+                layout = smart_reconstructor.reconstruct_from_layout_analysis(layout_result, text_boxes)
+            else:
+                if verbose:
+                    print(f"  ! AI Layout Analysis failed ({layout_result.get('error')}). Falling back to heuristic analysis.")
+                layout = smart_reconstructor._analyze_layout_structure(text_boxes)
+                
             diagram_regions = layout.get('diagram_regions', [])
             
             # Filter out diagram text to build the "Cleaned" prose for translation
@@ -261,7 +278,8 @@ class BookTranslator:
                     book_context=self.book_context,
                     table_artifacts=tables,
                     chart_artifacts=charts,
-                    render_capture=diagram_render_capture
+                    render_capture=diagram_render_capture,
+                    layout=layout  # Pass the pre-computed AI layout!
                 )
                 
                 # Verify PDF was actually created
