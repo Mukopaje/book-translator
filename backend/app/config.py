@@ -10,21 +10,21 @@ class Settings(BaseSettings):
     database_url: str
     
     # JWT Authentication
-    secret_key: str
+    secret_key: str = "dev-secret-key-change-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     
     # Storage
     use_local_storage: bool = True
     
-    # Google Cloud Storage
-    gcs_bucket_originals: str
-    gcs_bucket_outputs: str
-    google_application_credentials: str
+    # Google Cloud Storage (optional if using local storage)
+    gcs_bucket_originals: str = "dev-bucket-originals"
+    gcs_bucket_outputs: str = "dev-bucket-outputs"
+    google_application_credentials: str = "/tmp/credentials.json"
     
-    # SendGrid
-    sendgrid_api_key: str
-    from_email: str
+    # SendGrid (optional for email features)
+    sendgrid_api_key: str = "dev-sendgrid-key"
+    from_email: str = "noreply@example.com"
     
     # Redis & Celery
     redis_url: str = "redis://localhost:6379/0"

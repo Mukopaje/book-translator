@@ -75,37 +75,44 @@ class BookTranslator:
         }
         
         try:
-            # Step 1: Layout Analysis
+            # Step 1: Preliminary OCR and Layout Analysis
             if verbose:
-                print(f"\n[1/6] Analyzing page layout...")
-            regions = self.layout_analyzer.detect_text_regions()
-            results['steps']['layout_analysis'] = {
-                'success': True,
-                'regions_found': len(regions)
-            }
-            if verbose:
-                print(f"  + Found {len(regions)} regions")
+                print(f"\n[1/6] Extracting text and analyzing page layout...")
             
-            # Step 2: OCR Text Extraction
-            if verbose:
-                print(f"\n[2/6] Extracting Japanese text...")
-            japanese_text = self.text_extractor.extract_text(
-                self.image_path, 
-                language='jpn'
-            )
-            results['steps']['ocr_extraction'] = {
-                'success': True,
-                'text_length': len(japanese_text),
-                'preview': japanese_text[:100] + "..." if len(japanese_text) > 100 else japanese_text
-            }
-            if verbose:
-                print(f"  + Extracted {len(japanese_text)} characters")
+            from google_ocr import GoogleOCR
+            ocr = GoogleOCR()
+            ocr_result = ocr.extract_text_with_boxes(self.image_path)
+            text_boxes = ocr_result.get('text_boxes', [])
             
-            # Step 3: Translation
-            if verbose:
-                print(f"\n[3/6] Translating to English...")
+            # Use smart reconstructor to identify diagram/table regions early
+            smart_reconstructor = SmartLayoutReconstructor(self.image_path)
+            layout = smart_reconstructor._analyze_layout_structure(text_boxes)
+            diagram_regions = layout.get('diagram_regions', [])
             
-            # Combine global book context with page context
+            # Filter out diagram text to build the "Cleaned" prose for translation
+            cleaned_japanese_list = []
+            for box in text_boxes:
+                inside_any_diagram = False
+                for region in diagram_regions:
+                    if (box['x'] >= region['x'] - 5 and 
+                        box['y'] >= region['y'] - 5 and 
+                        box['x'] + box['w'] <= region['x'] + region['w'] + 5 and 
+                        box['y'] + box['h'] <= region['y'] + region['h'] + 5):
+                        inside_any_diagram = True
+                        break
+                if not inside_any_diagram and box.get('text'):
+                    cleaned_japanese_list.append(box['text'])
+            
+            japanese_text = "\n".join(cleaned_japanese_list)
+            
+            if verbose:
+                print(f"  + Found {len(diagram_regions)} diagram region(s)")
+                print(f"  + Extracted {len(japanese_text)} characters for prose translation")
+
+            # Step 2: Translation with Context
+            if verbose:
+                print(f"\n[2/6] Translating cleaned prose to English...")
+            
             translation_context = "technical manual"
             if self.book_context:
                 translation_context = f"{translation_context}. Book Context: {self.book_context}"
@@ -114,186 +121,217 @@ class BookTranslator:
                 japanese_text,
                 context=translation_context
             )
-            results['steps']['translation'] = {
-                'success': True,
-                'text_length': len(english_text),
-                'preview': english_text[:100] + "..." if len(english_text) > 100 else english_text
-            }
+            
             if verbose:
                 print(f"  + Translation complete ({len(english_text)} characters)")
             
             # Step 4: Create Clean PDF with Smart Layout
             if verbose:
                 print(f"\n[4/6] Creating clean translated PDF with smart layout...")
+            
+            # Use the layout we already computed
+            # pdf_path and smart_reconstructor are already set up
+            pdf_path = f"{self.output_dir}/{self.page_name}_translated.pdf"
+            
+            # Simplified text box construction since we already have text_boxes from OCR
+            # Just add empty translation strings to them for the reconstructor
+            for box in text_boxes:
+                box['translation'] = ''
+            
+            # 4a: Run artifact agents (MVP: stubs return empty for tables/charts)
+            if verbose:
+                print(f"  + Running artifact agents (tables/charts/diagrams)...")
+            
+            import traceback
             try:
-                # Use smart layout reconstructor
-                smart_reconstructor = SmartLayoutReconstructor(self.image_path)
-                pdf_path = f"{self.output_dir}/{self.page_name}_translated.pdf"
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+                import time
                 
-                # Get text boxes with Japanese text (not translated yet)
-                from google_ocr import GoogleOCR
-                ocr = GoogleOCR()
-                ocr_result = ocr.extract_text_with_boxes(self.image_path)
-                
-                # Add Japanese text to boxes
-                text_boxes = []
-                for box in ocr_result['text_boxes']:
-                    if box['text'].strip():
-                        text_boxes.append({
-                            'x': box['x'],
-                            'y': box['y'],
-                            'w': box['w'],
-                            'h': box['h'],
-                            'text': box['text'],
-                            'translation': ''
-                        })
-                
-                # Analyze layout to find diagrams
-                # Use the existing smart_reconstructor instance instead of creating a new one
-                # or re-importing the class which causes UnboundLocalError
-                temp_reconstructor = SmartLayoutReconstructor(self.image_path)
-                layout = temp_reconstructor._analyze_layout_structure(text_boxes)
-                diagram_regions = layout.get('diagram_regions', [])
-                
-                if verbose and diagram_regions:
-                    print(f"  + Found {len(diagram_regions)} diagram region(s)")
-                
-                # 4a: Run artifact agents (MVP: stubs return empty for tables/charts)
-                if verbose:
-                    print(f"  + Running artifact agents (tables/charts/diagrams)...")
-                
-                import traceback
-                try:
-                    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-                    import time
+                def run_table_detection():
+                    table_agent = TableAgent()
+                    chart_agent = ChartAgent()
                     
-                    def run_table_detection():
-                        table_agent = TableAgent()
-                        chart_agent = ChartAgent()
-                        tables = table_agent.detect_and_extract(self.image_path, text_boxes, self.translator, self.book_context)
-                        charts = chart_agent.from_tables(tables)
-                        return tables, charts
+                    # Filter out boxes that are inside diagrams to avoid false positive tables
+                    non_diagram_boxes = []
+                    for box in text_boxes:
+                        inside_diagram = False
+                        for region in diagram_regions:
+                            # Simple hit test with 5px tolerance
+                            if (box['x'] >= region['x'] - 5 and 
+                                box['y'] >= region['y'] - 5 and 
+                                box['x'] + box['w'] <= region['x'] + region['w'] + 5 and 
+                                box['y'] + box['h'] <= region['y'] + region['h'] + 5):
+                                inside_diagram = True
+                                break
+                        if not inside_diagram:
+                            non_diagram_boxes.append(box)
                     
-                    # Run with 90 second timeout
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(run_table_detection)
-                        try:
-                            tables, charts = future.result(timeout=90)
-                        except FutureTimeout:
-                            if verbose:
-                                print(f"    ! Table detection timed out (>90s), setting tables and charts to empty lists.")
-                            tables, charts = [], []
-                    if verbose:
-                        print(f"    + Found {len(tables)} tables and {len(charts)} charts.")
-                        
-                except Exception as e:
-                    if verbose:
-                        print(f"    ! Artifact agent error (tables/charts): {e}")
-                        print(f"    ! Full stack trace:\n{traceback.format_exc()}")
-                    tables, charts = [], []
+                    tables = table_agent.detect_and_extract(self.image_path, non_diagram_boxes, self.translator, self.book_context)
+                    charts = chart_agent.from_tables(tables)
+                    return tables, charts
                 
+                # Run with 90 second timeout
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_table_detection)
+                    try:
+                        tables, charts = future.result(timeout=90)
+                    except FutureTimeout:
+                        if verbose:
+                            print(f"    ! Table detection timed out (>90s), setting tables and charts to empty lists.")
+                        tables, charts = [], []
                 if verbose:
-                    print(f"  + Artifact detection finished, moving on to diagram translation...")
+                    print(f"    + Found {len(tables)} tables and {len(charts)} charts.")
+                    for i, t in enumerate(tables):
+                        print(f"      [Table {i}] {t.id} rows={t.rows} cols={t.cols} bbox={t.bbox.x},{t.bbox.y}")
+                    
+            except Exception as e:
+                if verbose:
+                    print(f"    ! Artifact agent error (tables/charts): {e}")
+                    print(f"    ! Full stack trace:\n{traceback.format_exc()}")
+                tables, charts = [], []
+            
+            if verbose:
+                print(f"  + Artifact detection finished, moving on to diagram translation...")
 
-                # Step 4b: Translate diagrams if found
-                translated_diagrams = None
-                if diagram_regions:
+            # Step 4b: Translate diagrams if found
+            translated_diagrams = None
+            if diagram_regions:
+                if verbose:
+                    print(f"\n[4b/6] Translating diagram labels...")
+                # Use enhanced processing mode for crisp diagrams with
+                # a clean white background.
+                diagram_translator = DiagramTranslator(processing_mode="enhanced")
+                diagram_output_dir = f"{self.output_dir}/diagrams"
+                translated_diagrams = diagram_translator.process_diagrams(
+                    self.image_path,
+                    diagram_regions,
+                    self.translator,
+                    diagram_output_dir,
+                    book_context=self.book_context
+                )
+                if verbose:
+                    print(f"  + Translated {len(translated_diagrams)} diagram(s)")
+            
+            # Normalize diagram artifacts for downstream use (not yet used in PDF composer)
+            try:
+                diagram_artifacts = DiagramAgent().from_translated_diagrams(translated_diagrams)
+            except Exception as e:
+                if verbose:
+                    print(f"    ! Diagram artifact normalization error: {e}")
+                diagram_artifacts = []
+            
+            # Split previously translated prose into paragraphs
+            translated_paragraphs = english_text.split('\n\n')
+            
+            # Use Gemini to organize paragraphs for better layout (if available)
+            if hasattr(self.translator, 'organize_paragraphs') and hasattr(self.translator, 'available') and self.translator.available:
+                try:
                     if verbose:
-                        print(f"\n[4b/6] Translating diagram labels...")
-                    # Use enhanced processing mode for crisp diagrams with
-                    # a clean white background.
-                    diagram_translator = DiagramTranslator(processing_mode="enhanced")
-                    diagram_output_dir = f"{self.output_dir}/diagrams"
-                    translated_diagrams = diagram_translator.process_diagrams(
-                        self.image_path,
-                        diagram_regions,
-                        self.translator,
-                        diagram_output_dir,
-                        book_context=self.book_context
+                        print(f"\n[3/6] Organizing paragraphs with Gemini for better layout...")
+                    translated_paragraphs = self.translator.organize_paragraphs(
+                        translated_paragraphs, 
+                        context=translation_context
                     )
                     if verbose:
-                        print(f"  + Translated {len(translated_diagrams)} diagram(s)")
-                
-                # Normalize diagram artifacts for downstream use (not yet used in PDF composer)
-                try:
-                    diagram_artifacts = DiagramAgent().from_translated_diagrams(translated_diagrams)
+                        print(f"  + Organized into {len(translated_paragraphs)} well-structured paragraphs")
                 except Exception as e:
                     if verbose:
-                        print(f"    ! Diagram artifact normalization error: {e}")
-                    diagram_artifacts = []
-                
-                # Create the PDF with smart layout (pass full page Japanese text for better translation)
-                diagram_render_capture = []
+                        print(f"  ! Paragraph organization failed: {e}, using original paragraphs")
+                    # Continue with original paragraphs if organization fails
+            
+            # Create the PDF with smart layout
+            diagram_render_capture = []
+            pdf_creation_success = False
+            pdf_creation_error = None
+            
+            try:
                 if verbose:
-                    print(f"  + Reconstructing PDF page...")
+                    print(f"  + Reconstructing PDF page with {len(translated_paragraphs)} paragraphs...")
+                
+                # Build full page Japanese text for page number extraction
+                # Include ALL text boxes (not just cleaned) to get page number
+                full_page_japanese = "\n".join([box.get('text', '') for box in text_boxes if box.get('text')])
+                
                 smart_reconstructor.reconstruct_pdf(
                     text_boxes, 
                     pdf_path, 
-                    translator=self.translator,
-                    full_page_japanese=japanese_text,  # Use the full extracted text
-                    translated_diagrams=translated_diagrams,  # Pass translated diagrams
+                    translated_paragraphs=translated_paragraphs, # Pass pre-translated text
+                    translated_diagrams=translated_diagrams,
+                    full_page_japanese=full_page_japanese,  # Pass for page number extraction
                     book_context=self.book_context,
                     table_artifacts=tables,
                     chart_artifacts=charts,
                     render_capture=diagram_render_capture
                 )
-                if verbose:
-                    print(f"  + PDF reconstruction finished.")
                 
-                results['steps']['pdf_creation'] = {
-                    'success': True,
-                    'output_file': f"{self.page_name}_translated.pdf",
-                    'diagrams_translated': len(translated_diagrams) if translated_diagrams else 0
-                }
-                # Record artifact summary for visibility (MVP only).
-                results['steps']['artifacts'] = {
-                    'tables': len(tables),
-                    'charts': len(charts),
-                    'diagrams': len(diagram_artifacts),
-                }
-                # Provide serializable artifact details for persistence
-                try:
-                    results['steps']['artifact_details'] = {
-                        'tables': artifacts_to_dict(tables),
-                        'charts': artifacts_to_dict(charts),
-                        'diagrams': artifacts_to_dict(diagram_artifacts),
-                        'diagram_renderings': diagram_render_capture,
-                    }
-                except Exception as e:
+                # Verify PDF was actually created
+                if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
+                    pdf_creation_success = True
                     if verbose:
-                        print(f"    ! Artifact serialization error: {e}")
-                if verbose:
-                    print(f"  + Smart layout PDF created: {pdf_path}")
-
-                # Step 4c: Create Preview Image (Disabled per user request)
-                # if verbose:
-                #     print(f"\n[4c/6] Creating preview image...")
-                # try:
-                #     preview_path = f"{self.output_dir}/{self.page_name}_translated.jpg"
-                #     overlay = TextOverlay(self.image_path)
-                #     # Use the existing translator
-                #     overlay.overlay_boxes_with_translation(self.translator, output_path=preview_path)
-                #     
-                #     if verbose:
-                #         print(f"  + Preview image created: {preview_path}")
-                # except Exception as e:
-                #     print(f"  ! Preview image creation failed: {e}")
-                #     # Don't fail the whole process for a preview
-                    
+                        print(f"  + PDF reconstruction finished.")
+                else:
+                    pdf_creation_error = f"PDF file not created or empty: {pdf_path}"
+                    if verbose:
+                        print(f"  ! PDF verification failed: {pdf_creation_error}")
+                        
             except Exception as e:
-                results['steps']['pdf_creation'] = {
-                    'success': False,
-                    'error': str(e)
-                }
+                pdf_creation_error = str(e)
                 if verbose:
                     print(f"  ! PDF creation failed: {e}")
                     import traceback
                     traceback.print_exc()
-                
-                # Propagate error to main result if PDF creation is critical
-                # For now, we'll consider it a partial success but log it clearly
-                results['warnings'] = results.get('warnings', []) + [f"PDF creation failed: {e}"]
+            
+            # Record PDF creation result
+            results['steps']['pdf_creation'] = {
+                'success': pdf_creation_success,
+                'output_file': f"{self.page_name}_translated.pdf",
+                'diagrams_translated': len(translated_diagrams) if translated_diagrams else 0
+            }
+            if pdf_creation_error:
+                results['steps']['pdf_creation']['error'] = pdf_creation_error
+            
+            # Record artifact summary for visibility (MVP only).
+            results['steps']['artifacts'] = {
+                'tables': len(tables),
+                'charts': len(charts),
+                'diagrams': len(diagram_artifacts),
+            }
+            
+            # Provide serializable artifact details for persistence
+            try:
+                results['steps']['artifact_details'] = {
+                    'tables': artifacts_to_dict(tables),
+                    'charts': artifacts_to_dict(charts),
+                    'diagrams': artifacts_to_dict(diagram_artifacts),
+                    'diagram_renderings': diagram_render_capture,
+                }
+            except Exception as e:
+                if verbose:
+                    print(f"    ! Artifact serialization error: {e}")
+                # Don't fail the whole process for artifact serialization errors
+            
+            if pdf_creation_success:
+                if verbose:
+                    print(f"  + Smart layout PDF created: {pdf_path}")
+            else:
+                # PDF creation failed - this should cause overall failure
+                error_msg = pdf_creation_error or "PDF creation failed for unknown reason"
+                raise Exception(f"PDF creation failed: {error_msg}")
 
+            # Step 4c: Create Preview Image (Disabled per user request)
+            # if verbose:
+            #     print(f"\n[4c/6] Creating preview image...")
+            # try:
+            #     preview_path = f"{self.output_dir}/{self.page_name}_translated.jpg"
+            #     overlay = TextOverlay(self.image_path)
+            #     # Use the existing translator
+            #     overlay.overlay_boxes_with_translation(self.translator, output_path=preview_path)
+            #     
+            #     if verbose:
+            #         print(f"  + Preview image created: {preview_path}")
+            # except Exception as e:
+            #     print(f"  ! Preview image creation failed: {e}")
+            #     # Don't fail the whole process for a preview
             
             # Step 5: Save Results
             if verbose:
@@ -331,7 +369,7 @@ class BookTranslator:
                 print(f"{'='*60}")
                 print(f"Japanese text: {len(japanese_text)} characters")
                 print(f"English text: {len(english_text)} characters")
-                print(f"Regions processed: {len(regions)}")
+                print(f"Diagrams processed: {len(diagram_regions) if diagram_regions else 0}")
                 print(f"Output directory: {self.output_dir}/")
             
             results['success'] = True

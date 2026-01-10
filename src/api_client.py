@@ -265,9 +265,11 @@ class APIClient:
 def get_api_client() -> APIClient:
     """Get or create API client in session state."""
     if "api_client" not in st.session_state:
-        # Explicitly set to localhost:8001
-        st.session_state.api_client = APIClient(base_url="http://localhost:8001")
-        print(f"API Client created with base_url: http://localhost:8001")
+        # Use environment variable or default to backend service name for Docker
+        import os
+        backend_url = os.getenv("BACKEND_URL", "http://backend:8000")
+        st.session_state.api_client = APIClient(base_url=backend_url)
+        print(f"API Client created with base_url: {backend_url}")
     
     # Restore token from session state if available
     if st.session_state.get('token') and not st.session_state.api_client.token:

@@ -3,6 +3,7 @@ Diagram Translator
 Extracts diagram regions, translates text labels, and creates translated diagrams
 """
 
+import re
 from PIL import Image, ImageDraw, ImageFont
 import os
 import cv2
@@ -42,7 +43,7 @@ class DiagramTranslator:
         except:
             self.font_path = None
 
-    def _inpaint_text_regions(self, pil_image, text_boxes, fill_with_white=False):
+    def _inpaint_text_regions(self, pil_image, text_boxes, fill_with_white=False, padding=2):
         """Remove or neutralize text regions in the image.
 
         If fill_with_white is False, use OpenCV inpainting to synthesize
@@ -59,8 +60,7 @@ class DiagramTranslator:
             
             for box in text_boxes:
                 x, y, w, h = box['x'], box['y'], box['w'], box['h']
-                # Expand slightly to cover artifacts
-                padding = 4
+                # Use provided padding
                 x = max(0, x - padding)
                 y = max(0, y - padding)
                 w = min(img_bgr.shape[1] - x, w + 2*padding)
@@ -152,14 +152,14 @@ class DiagramTranslator:
             # 1. Denoise first to remove paper grain/noise
             img_blur = cv2.GaussianBlur(img_np, (5, 5), 0)
             
-            # 2. Adaptive Thresholding
+            # 2. Adaptive Thresholding - using slightly larger block size to reduce salt-and-pepper noise
             img_thresh = cv2.adaptiveThreshold(
                 img_blur,
                 255,
                 cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                 cv2.THRESH_BINARY,
-                25,
-                15
+                31, # Increased from 25
+                18  # Increased from 15
             )
             
             # 3. Noise reduction
@@ -180,7 +180,7 @@ class DiagramTranslator:
                 inv = cv2.bitwise_not(binary)
                 num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
 
-                min_area = 25  # pixels; tweakable threshold
+                min_area = 40  # pixels; increased to remove larger noise specks
                 for label in range(1, num_labels):  # skip background label 0
                     area = stats[label, cv2.CC_STAT_AREA]
                     if area < min_area:
@@ -259,48 +259,52 @@ class DiagramTranslator:
             ocr_result = self.ocr.extract_text_with_boxes(temp_path)
             raw_boxes = ocr_result.get('text_boxes', [])
 
-            # Cluster char-level boxes into logical labels
+            # Cluster char-level boxes into logical labels for translation
             text_boxes = self._cluster_text_boxes(raw_boxes)
             
-            if not text_boxes:
+            if not raw_boxes:
                 print(f"  No text found in diagram region")
-                return diagram
+                return diagram, []
             
-            print(f"  Found {len(text_boxes)} text elements in diagram")
+            print(f"  Found {len(text_boxes)} text labels in diagram")
 
             # Decide how aggressively to process the diagram background
             if self.processing_mode == "raw":
                 # No background work: keep original crop, just draw translated labels
                 overlay_image = diagram.copy()
-            elif self.processing_mode == "light":
-                # Fill text areas with white and lightly normalize background
-                cleaned = self._inpaint_text_regions(diagram, text_boxes, fill_with_white=True)
-                overlay_image = self._light_normalize_diagram(cleaned)
             else:
-                # Enhanced mode: inpaint then strong thresholding
-                cleaned = self._inpaint_text_regions(diagram, text_boxes)
-                overlay_image = self._enhance_diagram_quality(cleaned)
+                # Use RAW boxes for inpainting to ensure every speck of ink is covered
+                # Increase padding slightly (4px) to ensure edges are gone
+                cleaned = self._inpaint_text_regions(diagram, raw_boxes, fill_with_white=True, padding=4)
+                
+                if self.processing_mode == "light":
+                    overlay_image = self._light_normalize_diagram(cleaned)
+                else:
+                    # Enhanced mode: adaptive thresholding
+                    overlay_image = self._enhance_diagram_quality(cleaned)
             
             # Process each text box
             text_annotations = []
             for box in text_boxes:
                 japanese_text = box['text'].strip()
-                
-                # Allow single characters (like A, B, P, V) if they are alphanumeric
                 if not japanese_text:
                     continue
                 
-                # Filter out long text blocks (likely paragraphs that shouldn't be in diagram labels)
-                # If text is very long (> 50 chars) or has multiple lines, it might be a paragraph
-                if len(japanese_text) > 50 or japanese_text.count('\n') > 2:
-                    print(f"    Skipping long text block in diagram: {japanese_text[:30]}...")
+                # Filter out obvious noise or non-text artifacts
+                if len(japanese_text) == 1 and not any('\u3040' <= c <= '\u9fff' for c in japanese_text) and not japanese_text.isalnum():
                     continue
 
                 # Translate the text
                 try:
-                    # Preserve short ASCII labels (e.g., A, B, P1, V2) exactly
-                    # so they are never distorted by translation.
-                    if japanese_text.isascii() and len(japanese_text) <= 3 and any(ch.isalnum() for ch in japanese_text):
+                    # Preserve technical codes exactly
+                    # e.g. DE101, 14150, 2350
+                    is_technical = (
+                        japanese_text.lower().startswith('de') or 
+                        (japanese_text.isdigit() and len(japanese_text) >= 2) or
+                        (japanese_text.replace('.', '').isdigit())
+                    )
+                    
+                    if is_technical:
                         english_text = japanese_text
                     else:
                         # Add book context to translation request
@@ -320,76 +324,30 @@ class DiagramTranslator:
                 
                 # Filter out empty or whitespace-only translations
                 if not english_text or not english_text.strip():
-                    print(f"    Skipping empty translation for '{japanese_text}'")
                     continue
 
-                # Normalize whitespace
                 english_text = english_text.strip()
-
-                # Skip labels that have no alphanumeric characters at all
-                # (e.g., pure symbols like □, ●, punctuation-only marks).
-                if not any(ch.isalnum() for ch in english_text):
-                    print(f"    Skipping non-alphanumeric label: '{english_text}'")
-                    continue
-
-                # Drop common partial-sentence fragments that tend to leak
-                # from surrounding text into diagrams.
-                tokens = english_text.lower().split()
-                if len(tokens) == 1 and tokens[0] in {"more", "other", "others", "following"}:
-                    print(f"    Skipping low-information label: '{english_text}'")
-                    continue
-
+                
+                # Filter out diagnostic or helper phrases
                 lower_text = english_text.lower()
-                # Filter out diagnostic or helper phrases coming from other
-                # parts of the pipeline which should never appear as
-                # diagram labels.
                 diagnostic_fragments = [
                     "(no content to translate)",
                     "(no text provided)",
-                    "(no text to translate)",
-                    "no translation needed as there is no japanese text provided",
-                    "no translation needed as the japanese text is a single char",
+                    "no translation needed",
+                    "provided japanese text"
                 ]
                 if any(fragment in lower_text for fragment in diagnostic_fragments):
-                    print(f"    Skipping diagnostic/helper label: '{english_text}'")
-                    continue
-
-                if "referred to as" in lower_text:
-                    print(f"    Skipping fragment label containing 'referred to as': '{english_text}'")
-                    continue
-                if len(tokens) >= 2 and tokens[0] in {"referred", "called"} and tokens[1] in {"to", "as"}:
-                    print(f"    Skipping fragment label starting with '{tokens[0]} {tokens[1]}': '{english_text}'")
-                    continue
-
-                # Filter out overly long English labels which are likely
-                # paragraph fragments rather than true diagram labels.
-                if len(english_text) > 40 or english_text.count(" ") > 4:
-                    print(f"    Skipping long translated label: '{english_text[:60]}'")
                     continue
                 
                 x, y, w, h = box['x'], box['y'], box['w'], box['h']
 
-                # Additional guard: labels that end up very close to the
-                # bottom edge of the diagram are often fragments of the
-                # surrounding body text rather than true diagram labels.
-                # In the bottom band of the diagram height we only allow
-                # extremely short ASCII tokens (like A, B, P1, V2) and drop
-                # everything else.
+                # Bottom band check (usually contains body text leaking into crop)
+                # But be careful with dimensions!
                 center_y = y + h / 2.0
-                try:
-                    diag_height = diagram.height
-                except Exception:
-                    diag_height = None
-
-                if diag_height and center_y > diag_height * 0.7:
-                    keep_short_ascii = (
-                        english_text.isascii()
-                        and len(english_text) <= 3
-                        and any(ch.isalnum() for ch in english_text)
-                    )
-                    if not keep_short_ascii:
-                        print(f"    Skipping bottom-edge text '{english_text}' as likely body text")
-                        continue
+                diag_height = diagram.height
+                if diag_height and center_y > diag_height * 0.9 and len(english_text) > 20: # Keep short ones
+                    print(f"    Skipping likely-leaked body text: '{english_text}'")
+                    continue
                 
                 # Store annotation for vector rendering later (PDF overlay).
                 # We deliberately do NOT draw text directly onto the diagram

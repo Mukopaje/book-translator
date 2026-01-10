@@ -55,7 +55,6 @@ class DiagramAgent:
             artifacts.append(
                 DiagramArtifact(
                     id=str(uuid.uuid4()),
-                    type="diagram",
                     bbox=bbox,
                     annotations=anns,
                 )

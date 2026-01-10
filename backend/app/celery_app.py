@@ -24,8 +24,9 @@ celery_app.conf.update(
     worker_max_tasks_per_child=50,  # Restart worker after 50 tasks
 )
 
-# Task routes
-celery_app.conf.task_routes = {
-    'app.tasks.translation.process_page_task': {'queue': 'translation'},
-    'app.tasks.translation.process_batch_task': {'queue': 'translation'},
-}
+# Task routes - Using default 'celery' queue for all tasks
+# celery_app.conf.task_routes = {
+#     'app.tasks.translation.process_page_task': {'queue': 'translation'},
+#     'app.tasks.translation.process_batch_task': {'queue': 'translation'},
+# }
+

@@ -174,6 +174,69 @@ Translate the following {source_name} text to {target_name}. Return ONLY the tra
         
         return translated
     
+    def organize_paragraphs(self, paragraphs: list, context: str = "technical manual") -> list:
+        """
+        Use Gemini to reorganize and structure paragraphs for better layout.
+        Merges fragmented text, fixes paragraph breaks, and organizes content logically.
+        
+        Args:
+            paragraphs: List of paragraph strings (may be fragmented)
+            context: Context about the document (e.g., "technical manual")
+            
+        Returns:
+            List of well-organized paragraph strings
+        """
+        if not self.available:
+            return paragraphs  # Return as-is if Gemini not available
+        
+        if not paragraphs:
+            return []
+        
+        # Combine all paragraphs into a single text block for context
+        full_text = "\n\n".join([p.strip() for p in paragraphs if p.strip()])
+        
+        if not full_text.strip():
+            return paragraphs
+        
+        # Build prompt for paragraph organization
+        prompt = f"""You are organizing translated technical manual content for better readability and layout.
+
+CONTEXT: {context}
+
+Your task:
+1. Merge fragmented sentences that should be together
+2. Split overly long paragraphs at logical points
+3. Ensure proper paragraph breaks between distinct topics
+4. Remove duplicate or redundant text
+5. Organize text into clear, logical paragraphs
+6. Maintain all technical terminology exactly as written
+7. Keep section numbers, figure references, and labels (e.g., "(a) Diesel Engine", "Figure 2-1")
+8. Do NOT add any new content or explanations
+9. Return ONLY the reorganized text, with double line breaks (\\n\\n) between paragraphs
+
+TEXT TO ORGANIZE:
+{full_text}
+
+ORGANIZED TEXT (with \\n\\n between paragraphs):"""
+        
+        try:
+            response = self.model.generate_content(prompt)
+            organized_text = response.text.strip()
+            
+            # Split into paragraphs
+            organized_paragraphs = [p.strip() for p in organized_text.split('\n\n') if p.strip()]
+            
+            if organized_paragraphs:
+                print(f"  Gemini organized {len(paragraphs)} paragraphs into {len(organized_paragraphs)} well-structured paragraphs")
+                return organized_paragraphs
+            else:
+                print(f"  Warning: Gemini returned empty organization, using original")
+                return paragraphs
+                
+        except Exception as e:
+            print(f"  Warning: Gemini paragraph organization failed: {e}, using original paragraphs")
+            return paragraphs
+    
     def save_translation(self, original: str, translated: str, output_path: str):
         """Save original and translated text"""
         content = f"""=== ORIGINAL (Japanese) ===

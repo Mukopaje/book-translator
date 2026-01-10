@@ -10,9 +10,16 @@ from app.models.db_models import Page, Project, PageStatus
 from app.services.storage import storage_service
 from datetime import datetime
 
-# Add project root to path for BookTranslator import
+# Add src directory to path for BookTranslator import
 project_root = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(project_root / "src"))
+src_path = Path("/src")
+
+if src_path.exists():
+    # In Docker, src is at /src
+    sys.path.insert(0, str(src_path))
+else:
+    # Local development
+    sys.path.insert(0, str(project_root / "src"))
 
 logger = logging.getLogger(__name__)
 
@@ -63,13 +70,20 @@ def process_page_task(self, page_id: int, project_id: int):
         
         # Download image from GCS if needed
         from app.config import settings
-        if settings.use_local_storage:
-            image_path = storage_service.get_local_path(
-                settings.gcs_bucket_originals,
-                page.original_image_path
-            )
+        # Try to find the image locally first (fallback for hybrid storage)
+        local_path = storage_service.get_local_path(
+            page.original_image_path,
+            is_output=False
+        )
+        
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            image_path = local_path
+            logger.info(f"Found image in local storage volume: {image_path}")
+        elif settings.use_local_storage:
+            # If we are strictly in local mode and it's not there, it's an error
+            raise Exception(f"Image not found in local storage: {local_path}")
         else:
-            # Download from GCS to temp location
+            # Try to download from storage service (GCS)
             import tempfile
             import requests
             
@@ -79,17 +93,30 @@ def process_page_task(self, page_id: int, project_id: int):
                 expiration=3600
             )
             
-            temp_dir = tempfile.mkdtemp()
-            image_path = os.path.join(temp_dir, f"page_{page_id}.jpg")
-            
-            response = requests.get(signed_url.replace('file://', ''))
-            with open(image_path, 'wb') as f:
-                f.write(response.content)
+            if signed_url.startswith('file://'):
+                image_path = signed_url.replace('file://', '')
+            else:
+                temp_dir = tempfile.mkdtemp()
+                image_path = os.path.join(temp_dir, f"page_{page_id}.jpg")
+                
+                logger.info(f"Downloading image from Cloud Storage: {signed_url}")
+                response = requests.get(signed_url)
+                if response.status_code != 200:
+                    raise Exception(f"Failed to download from Cloud Storage (404 likely means the file was only uploaded locally): {response.status_code}")
+                
+                with open(image_path, 'wb') as f:
+                    f.write(response.content)
         
         # Import BookTranslator
         from main import BookTranslator
         
         # Process the page
+        if not os.path.exists(image_path):
+            raise Exception(f"Image file not found at {image_path}")
+        
+        if os.path.getsize(image_path) == 0:
+            raise Exception(f"Image file is empty at {image_path}")
+
         output_dir = str(project_root / "output")
         os.makedirs(output_dir, exist_ok=True)
         
@@ -102,16 +129,40 @@ def process_page_task(self, page_id: int, project_id: int):
         results = translator.process_page(verbose=True)
         
         if results.get('success'):
-            # Extract results
+            # Extract results - try to get OCR and translation text
             ocr_text = results.get('steps', {}).get('ocr_extraction', {}).get('preview', '')
             trans_text = results.get('steps', {}).get('translation', {}).get('preview', '')
             
-            # Get PDF path
+            # If OCR/translation preview not available, try to read from saved files
             stem = Path(image_path).stem
+            if not ocr_text:
+                japanese_file = os.path.join(output_dir, f"{stem}_japanese.txt")
+                if os.path.exists(japanese_file):
+                    with open(japanese_file, 'r', encoding='utf-8') as f:
+                        ocr_text = f.read()[:500]  # First 500 chars as preview
+            
+            if not trans_text:
+                translation_file = os.path.join(output_dir, f"{stem}_translation.txt")
+                if os.path.exists(translation_file):
+                    with open(translation_file, 'r', encoding='utf-8') as f:
+                        trans_text = f.read()[:500]  # First 500 chars as preview
+            
+            # Get PDF path
             pdf_path = os.path.join(output_dir, f"{stem}_translated.pdf")
             
             if not os.path.exists(pdf_path):
-                raise FileNotFoundError(f"PDF not created: {pdf_path}")
+                error_msg = f"PDF not created at expected path: {pdf_path}"
+                logger.error(error_msg)
+                # Check if PDF creation step had errors
+                pdf_step = results.get('steps', {}).get('pdf_creation', {})
+                if not pdf_step.get('success'):
+                    error_msg = f"PDF creation failed: {pdf_step.get('error', 'Unknown PDF creation error')}"
+                raise FileNotFoundError(error_msg)
+            
+            # Check for warnings that might indicate issues
+            warnings = results.get('warnings', [])
+            if warnings:
+                logger.warning(f"Page {page_id} completed with warnings: {warnings}")
             
             # Upload PDF to GCS if enabled
             if not settings.use_local_storage:
@@ -133,11 +184,12 @@ def process_page_task(self, page_id: int, project_id: int):
                         json.dump(artifact_details, jf, ensure_ascii=False, indent=2)
 
                     # Upload alongside PDF when using GCS
-                    storage_service.upload_artifacts_json(
-                        artifact_json_path,
-                        project_id,
-                        page.page_number,
-                    )
+                    if not settings.use_local_storage:
+                        storage_service.upload_artifacts_json(
+                            artifact_json_path,
+                            project_id,
+                            page.page_number,
+                        )
             except Exception as e:
                 logger.warning(f"Failed to persist artifacts JSON for page {page_id}: {e}")
             
@@ -163,17 +215,38 @@ def process_page_task(self, page_id: int, project_id: int):
                 'status': 'completed',
                 'page_id': page_id,
                 'page_number': page.page_number,
-                'ocr_chars': len(ocr_text),
-                'trans_chars': len(trans_text)
+                'ocr_chars': len(ocr_text) if ocr_text else 0,
+                'trans_chars': len(trans_text) if trans_text else 0
             }
         else:
-            # Processing failed
+            # Processing failed - extract detailed error information
             error_msg = results.get('error', 'Unknown error')
+            
+            # Try to get more specific error from steps
+            if error_msg == 'Unknown error':
+                pdf_step = results.get('steps', {}).get('pdf_creation', {})
+                if not pdf_step.get('success'):
+                    error_msg = pdf_step.get('error', 'PDF creation failed')
+                
+                # Check for other step errors
+                for step_name, step_data in results.get('steps', {}).items():
+                    if isinstance(step_data, dict) and not step_data.get('success', True):
+                        step_error = step_data.get('error', f'{step_name} failed')
+                        error_msg = f"{error_msg}. {step_error}" if error_msg != 'Unknown error' else step_error
+                
+                # Check warnings that might explain the failure
+                warnings = results.get('warnings', [])
+                if warnings and error_msg == 'Unknown error':
+                    error_msg = f"Processing failed: {'; '.join(warnings[:3])}"  # First 3 warnings
+            
+            # Log full results for debugging
+            logger.error(f"❌ Page {page_id} failed: {error_msg}")
+            logger.debug(f"Full results structure: {results}")
+            
             page.status = PageStatus.FAILED
-            page.error_message = error_msg
+            page.error_message = error_msg[:500]  # Limit error message length
             db.commit()
             
-            logger.error(f"❌ Page {page_id} failed: {error_msg}")
             raise Exception(error_msg)
     
     except Exception as e:
