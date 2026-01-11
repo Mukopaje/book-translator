@@ -176,24 +176,36 @@ class BookTranslator:
                 
                 def run_table_detection():
                     table_agent = TableAgent()
-                    # Filter out boxes inside diagrams/charts
+                    
+                    # 1. AI-Based Extraction (Preferred)
+                    # Extract table regions from the layout analysis
+                    ai_table_regions = [s for s in layout.get('page_sections', []) if s.get('type') == 'table']
+                    
+                    if ai_table_regions:
+                        print(f"    [Main] Detected {len(ai_table_regions)} tables from AI layout. Using AI extraction.")
+                        tables = table_agent.extract_tables_with_ai(self.image_path, ai_table_regions)
+                        # AI extraction might fail or return empty, so fall back if needed?
+                        if tables:
+                            return tables, []
+                    
+                    # 2. Heuristic Fallback (Legacy)
+                    print("    [Main] No AI tables detected or extraction skipped. Attempting heuristic detection.")
+                    # Filter out boxes that are inside diagrams to avoid false positive tables
                     non_diagram_boxes = []
                     for box in text_boxes:
-                        inside = False
+                        inside_diagram = False
                         for region in diagram_regions + chart_regions:
                             if (box['x'] >= region['x'] - 5 and 
                                 box['y'] >= region['y'] - 5 and 
                                 box['x'] + box['w'] <= region['x'] + region['w'] + 5 and 
                                 box['y'] + box['h'] <= region['y'] + region['h'] + 5):
-                                inside = True
+                                inside_diagram = True
                                 break
-                        if not inside:
+                        if not inside_diagram:
                             non_diagram_boxes.append(box)
                     
                     tables = table_agent.detect_and_extract(self.image_path, non_diagram_boxes, self.translator, self.book_context)
-                    # We are using dedicated Chart pipeline now, so ChartAgent is less critical for rendering images
-                    # but maybe useful for data extraction? For now, empty list to rely on visual ChartTranslator.
-                    charts = [] 
+                    charts = chart_agent.from_tables(tables)
                     return tables, charts
                 
                 # Run with 90 second timeout

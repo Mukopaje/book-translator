@@ -2,7 +2,7 @@ import redis
 
 def check_queues():
     try:
-        r = redis.Redis(host='localhost', port=6379, db=0)
+        r = redis.Redis(host='localhost', port=6380, db=0)
         print("Connected to Redis")
         
         keys = r.keys('*')

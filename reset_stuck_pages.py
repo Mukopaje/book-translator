@@ -3,14 +3,14 @@ import psycopg2
 
 def reset_queued_pages():
     try:
-        conn = psycopg2.connect("postgresql://translator:translator123@localhost:5432/book_translator")
+        conn = psycopg2.connect("postgresql://translator:translator123@localhost:5433/book_translator")
         conn.autocommit = True
         cur = conn.cursor()
 
-        print("--- Resetting stuck 'QUEUED', 'PROCESSING', and 'FAILED' pages to 'UPLOADED' ---")
-        cur.execute("UPDATE pages SET status = 'UPLOADED' WHERE status IN ('QUEUED', 'PROCESSING', 'FAILED');")
+        print("--- Resetting stuck Page ID 135 to 'UPLOADED' ---")
+        cur.execute("UPDATE pages SET status = 'UPLOADED' WHERE id = 135;")
         rows_affected = cur.rowcount
-        print(f"✅ Reset {rows_affected} pages to 'UPLOADED'.")
+        print(f"✅ Reset {rows_affected} page(s) to 'UPLOADED'.")
 
         cur.close()
         conn.close()
