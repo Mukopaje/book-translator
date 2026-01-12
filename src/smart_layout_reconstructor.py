@@ -50,14 +50,14 @@ class SmartLayoutReconstructor:
             self.font_name = 'Helvetica'
             self.font_name_bold = 'Helvetica-Bold'
 
-        # PDF settings
+        # PDF settings - optimized for better content fitting
         self.page_width, self.page_height = A4
-        self.margin_left = 60
-        self.margin_right = 60
-        self.margin_top = 80
-        self.margin_bottom = 80
-        self.font_size = 11
-        self.line_height = self.font_size * 1.5
+        self.margin_left = 50
+        self.margin_right = 50
+        self.margin_top = 50
+        self.margin_bottom = 50
+        self.font_size = 10  # Reduced from 11 for better fitting
+        self.line_height = self.font_size * 1.4  # Tighter line height
         self.canvas = None
         self.styles = getSampleStyleSheet()
     
@@ -178,6 +178,9 @@ class SmartLayoutReconstructor:
     def reconstruct_from_layout_analysis(self, layout_data, text_boxes):
         print("[SmartLayout] Reconstructing from AI Layout Analysis...")
         regions = layout_data.get('regions', [])
+        page_number = layout_data.get('page_number')  # Extract page number from AI
+        if page_number:
+            print(f"[SmartLayout] AI detected page number: {page_number}")
         page_sections = []
         regions.sort(key=lambda r: r['box_pixel']['y'])
         region_text_map = {id(r): [] for r in regions}
@@ -287,7 +290,13 @@ class SmartLayoutReconstructor:
                 chart_regions.append({'x': section['x'], 'y': section['y_start'], 'w': section['w'], 'h': section['height']})
                 diagram_regions.append({'x': section['x'], 'y': section['y_start'], 'w': section['w'], 'h': section['height']})
 
-        return {'paragraphs': paragraphs, 'diagram_regions': diagram_regions, 'chart_regions': chart_regions, 'page_sections': page_sections}
+        return {
+            'paragraphs': paragraphs,
+            'diagram_regions': diagram_regions,
+            'chart_regions': chart_regions,
+            'page_sections': page_sections,
+            'page_number': page_number  # Pass page number through
+        }
 
     def _group_into_paragraphs(self, boxes):
         if not boxes: return []
@@ -352,8 +361,16 @@ class SmartLayoutReconstructor:
             return re.match(r"^\d+$", cleaned) or re.match(r"^[a-z]\d*$", cleaned)
 
         print(f"Analyzing document layout structure...")
+
+        # Try to get page number from layout (AI-detected), otherwise try OCR extraction
         page_number = None
-        if text_boxes:
+        if layout and 'page_number' in layout:
+            page_number = layout.get('page_number')
+            if page_number:
+                print(f"[PDF] Using AI-detected page number: {page_number}")
+
+        # Fallback: Try to extract from OCR text if not found by AI
+        if not page_number and text_boxes:
             sorted_boxes = sorted(text_boxes, key=lambda b: (b.get('y', 0), b.get('x', 0)))
             for box in sorted_boxes[:20]:
                 text = box.get('text', '').strip()
@@ -362,8 +379,9 @@ class SmartLayoutReconstructor:
                 if (box.get('x', 0) > self.width * 0.7 or box.get('x', 0) < self.width * 0.3) and box.get('y', 0) < self.height * 0.15:
                     if re.search(r"(?:-|\u2014)\s*(\d{1,3})\s*(?:-|\u2014)", text):
                         page_number = re.search(r"(\d+)", text).group(1)
+                        print(f"[PDF] Extracted page number from OCR: {page_number}")
                         break
-        
+
         if not layout: layout = self._analyze_layout_structure(text_boxes)
         
         # Create PDF
@@ -372,10 +390,10 @@ class SmartLayoutReconstructor:
         c.setFillColorRGB(1, 1, 1)
         c.rect(0, 0, self.page_width, self.page_height, fill=1, stroke=0)
         c.setFillColor(black)
-        font_size = 11
+        font_size = 10  # Consistent with class settings
         c.setFont(self.font_name, font_size)
-        line_height = font_size * 1.5
-        current_y = self.page_height - 80
+        line_height = font_size * 1.4  # Tighter line height
+        current_y = self.page_height - self.margin_top
         at_page_top = True
         paragraph_index = 0
         legend_items = []
@@ -398,8 +416,8 @@ class SmartLayoutReconstructor:
             styles = getSampleStyleSheet()
             style = styles['Normal']
             style.fontName = self.font_name
-            style.fontSize = 8
-            style.leading = 10
+            style.fontSize = 7  # Slightly smaller for better table fitting
+            style.leading = 9
 
             for cell in cells:
                 r, c_idx = cell.row, cell.col
@@ -478,22 +496,23 @@ class SmartLayoutReconstructor:
                 # Fallback crop
                 diagram_image = self.image.crop((section['x'], section['y_start'], section['x']+section['w'], section['y_end']))
 
-            # Scale and Draw
-            diagram_width_pdf = self.page_width - 120
+            # Scale and Draw - use consistent margins
+            diagram_width_pdf = self.page_width - (self.margin_left + self.margin_right)
             scale = diagram_width_pdf / diagram_image.width if diagram_image.width > 0 else 1.0
             diagram_height_pdf = diagram_image.height * scale
-            
-            if diagram_height_pdf > (current_y - 80):
+
+            # Check if diagram needs new page
+            if diagram_height_pdf > (current_y - self.margin_bottom):
                  c.showPage()
                  c.setFillColorRGB(1, 1, 1)
                  c.rect(0, 0, self.page_width, self.page_height, fill=1, stroke=0)
                  c.setFillColor(black)
                  c.setFont(self.font_name, font_size)
-                 current_y = self.page_height - 80
+                 current_y = self.page_height - self.margin_top
                  at_page_top = True
-            
+
             diagram_y = current_y - diagram_height_pdf
-            diagram_x = 60
+            diagram_x = self.margin_left
             
             if hasattr(diagram_image, 'mode') and diagram_image.mode != 'RGB':
                 diagram_image = diagram_image.convert('RGB')
@@ -523,8 +542,8 @@ class SmartLayoutReconstructor:
         for i, section in enumerate(layout['page_sections']):
             if section['type'] == 'text':
                 if at_page_top and page_number:
-                     c.drawString(self.page_width/2, self.page_height-40, f"Page {page_number}")
-                     current_y = self.page_height - 80
+                     c.drawString(self.page_width/2, self.page_height - 30, f"Page {page_number}")
+                     current_y = self.page_height - self.margin_top
                      at_page_top = False
                 
                 # Render Paragraphs
@@ -543,17 +562,18 @@ class SmartLayoutReconstructor:
                         block_escaped = html.escape(block, quote=False)
                         para_html = block_escaped.replace('\\n', '<br/>').replace('\n', '<br/>')
                         try:
-                            para_obj = Paragraph(para_html, ParagraphStyle('Body', fontName=self.font_name, fontSize=11, leading=16))
-                            w, h = para_obj.wrap(self.page_width - 120, self.page_height)
-                            if current_y - h < 80:
+                            # Use smaller font and tighter leading for better fitting
+                            para_obj = Paragraph(para_html, ParagraphStyle('Body', fontName=self.font_name, fontSize=10, leading=14))
+                            w, h = para_obj.wrap(self.page_width - self.margin_left - self.margin_right, self.page_height)
+                            if current_y - h < self.margin_bottom:
                                 c.showPage()
                                 c.setFillColorRGB(1, 1, 1)
                                 c.rect(0, 0, self.page_width, self.page_height, fill=1, stroke=0)
                                 c.setFillColor(black)
                                 c.setFont(self.font_name, font_size)
-                                current_y = self.page_height - 80
+                                current_y = self.page_height - self.margin_top
                                 at_page_top = True
-                            para_obj.drawOn(c, 60, current_y - h)
+                            para_obj.drawOn(c, self.margin_left, current_y - h)
                             current_y -= (h + 10)
                         except: pass
 

@@ -29,20 +29,25 @@ from artifacts.schemas import artifacts_to_dict
 
 class BookTranslator:
     """Main orchestrator for the book translation pipeline"""
-    
-    def __init__(self, image_path: str, output_dir: str = "output", book_context: str = None):
+
+    def __init__(self, image_path: str, output_dir: str = "output", book_context: str = None,
+                 source_language: str = "auto", target_language: str = "en"):
         """
         Initialize the book translator
-        
+
         Args:
             image_path: Path to the input image
             output_dir: Directory for output files
             book_context: Optional global context about the book (e.g. "4-stroke engine manual")
+            source_language: Source language code (ISO 639-1) or 'auto' for detection
+            target_language: Target language code (ISO 639-1)
         """
         self.image_path = image_path
         self.output_dir = output_dir
         self.page_name = Path(image_path).stem
         self.book_context = book_context
+        self.source_language = source_language
+        self.target_language = target_language
         
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
@@ -134,24 +139,60 @@ class BookTranslator:
                     cleaned_japanese_list.append(box['text'])
             
             japanese_text = "\n".join(cleaned_japanese_list)
-            
+
             if verbose:
                 print(f"  + Found {len(diagram_regions)} diagram region(s)")
                 print(f"  + Found {len(chart_regions)} chart region(s)")
                 print(f"  + Extracted {len(japanese_text)} characters for prose translation")
 
+            # Step 1.5: Language Detection (if auto-detect is enabled)
+            detected_language = None
+            detection_confidence = None
+
+            if self.source_language == 'auto' and japanese_text.strip():
+                if verbose:
+                    print(f"\n[1.5/6] Detecting source language...")
+
+                try:
+                    from language_detector import LanguageDetector
+                    detector = LanguageDetector()
+                    detection_result = detector.detect_language(japanese_text[:500])  # Sample first 500 chars
+
+                    detected_language = detection_result['language_code']
+                    detection_confidence = detection_result['confidence']
+
+                    if verbose:
+                        print(f"  + Detected: {detection_result['language_name']} ({detected_language}) with {int(detection_confidence * 100)}% confidence")
+
+                    # Use detected language as source
+                    actual_source_lang = detected_language
+                except Exception as e:
+                    if verbose:
+                        print(f"  ! Language detection failed: {e}. Defaulting to 'ja'")
+                    actual_source_lang = 'ja'  # Fallback to Japanese
+            else:
+                actual_source_lang = self.source_language
+                if verbose:
+                    print(f"\n[1.5/6] Using specified source language: {actual_source_lang}")
+
             # Step 2: Translation with Context
             if verbose:
-                print(f"\n[2/6] Translating cleaned prose to English...")
-            
+                print(f"\n[2/6] Translating {actual_source_lang} → {self.target_language}...")
+
             translation_context = "technical manual"
             if self.book_context:
                 translation_context = f"{translation_context}. Book Context: {self.book_context}"
-                
+
             english_text = self.translator.translate_text(
                 japanese_text,
-                context=translation_context
+                context=translation_context,
+                source_lang=actual_source_lang,
+                target_lang=self.target_language
             )
+
+            # Store detection results in results dict
+            results['detected_language'] = detected_language
+            results['detection_confidence'] = detection_confidence
             
             if verbose:
                 print(f"  + Translation complete ({len(english_text)} characters)")

@@ -64,6 +64,28 @@ services:
     restart: unless-stopped
     command: celery -A app.celery_app worker --loglevel=debug
 
+  beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: book-translator-beat
+    volumes:
+      - ./backend:/app
+      - ./src:/src
+      - ./storage:/storage
+      - ./tessdata:/app/tessdata
+    environment:
+      - DATABASE_URL=postgresql://translator:translator123@postgres:5432/book_translator
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    command: celery -A app.celery_app beat --loglevel=info
+
   postgres:
     image: postgres:15-alpine
     container_name: book-translator-db

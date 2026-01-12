@@ -19,6 +19,7 @@ class PageStatusEnum(str, Enum):
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
 
 
 # User schemas
@@ -52,7 +53,7 @@ class Token(BaseModel):
 class ProjectCreate(BaseModel):
     title: str
     author: Optional[str] = None
-    source_language: str = "ja"
+    source_language: str = "auto"  # 'auto' for detection, or specific ISO code
     target_language: str = "en"
     book_context: Optional[str] = None
 
@@ -70,13 +71,15 @@ class ProjectResponse(BaseModel):
     author: Optional[str]
     source_language: str
     target_language: str
+    source_language_detected: Optional[str] = None
+    source_language_confidence: Optional[float] = None
     book_context: Optional[str]
     status: ProjectStatusEnum
     total_pages: int
     completed_pages: int
     created_at: datetime
     updated_at: Optional[datetime]
-    
+
     class Config:
         from_attributes = True
 
@@ -108,10 +111,17 @@ class PageResponse(BaseModel):
     ocr_text: Optional[str]
     translated_text: Optional[str]
     error_message: Optional[str]
+    quality_score: Optional[int] = None
+    quality_level: Optional[str] = None
+    quality_issues: Optional[str] = None
+    quality_recommendations: Optional[str] = None
+    detected_language: Optional[str] = None
+    language_confidence: Optional[float] = None
     created_at: datetime
     updated_at: Optional[datetime]
     processed_at: Optional[datetime]
-    
+    replaced_at: Optional[datetime] = None
+
     class Config:
         from_attributes = True
 

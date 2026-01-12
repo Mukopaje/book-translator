@@ -119,16 +119,44 @@ def process_page_task(self, page_id: int, project_id: int):
 
         output_dir = str(project_root / "output")
         os.makedirs(output_dir, exist_ok=True)
-        
+
+        # Get language settings from project
+        source_lang = project.source_language or 'auto'
+        target_lang = project.target_language or 'en'
+
         translator = BookTranslator(
             image_path,
             output_dir,
-            book_context=project.book_context or ''
+            book_context=project.book_context or '',
+            source_language=source_lang,
+            target_language=target_lang
         )
-        
+
         results = translator.process_page(verbose=True)
-        
+
+        # Store detected language at page level
+        if results.get('detected_language'):
+            page.detected_language = results['detected_language']
+            page.language_confidence = results.get('detection_confidence')
+            logger.info(f"Detected language for page {page_id}: {page.detected_language} ({page.language_confidence})")
+
+        # Update project-level detection on first successful detection
+        if source_lang == 'auto' and results.get('detected_language') and not project.source_language_detected:
+            project.source_language_detected = results['detected_language']
+            project.source_language_confidence = results.get('detection_confidence')
+            logger.info(f"Set project language detection: {project.source_language_detected}")
+
         if results.get('success'):
+            # NEW: Run quality verification
+            from agents.quality_agent import QualityVerificationAgent
+            import json
+
+            logger.info(f"Running quality verification for page {page_id}...")
+            quality_agent = QualityVerificationAgent()
+
+            # Get artifact details for verification
+            artifact_details = results.get('steps', {}).get('artifact_details', {})
+
             # Extract results - try to get OCR and translation text
             ocr_text = results.get('steps', {}).get('ocr_extraction', {}).get('preview', '')
             trans_text = results.get('steps', {}).get('translation', {}).get('preview', '')
@@ -149,7 +177,38 @@ def process_page_task(self, page_id: int, project_id: int):
             
             # Get PDF path
             pdf_path = os.path.join(output_dir, f"{stem}_translated.pdf")
-            
+
+            # Run quality verification before marking as complete
+            try:
+                quality_result = quality_agent.verify_page_quality(
+                    input_image_path=image_path,
+                    output_pdf_path=pdf_path,
+                    artifacts=artifact_details,
+                    original_ocr_text=ocr_text,
+                    translated_text=trans_text,
+                    processing_results=results
+                )
+
+                # Store quality metrics
+                page.quality_score = quality_result['score']
+                page.quality_level = quality_result['quality_level']
+                page.quality_issues = json.dumps(quality_result['issues'], ensure_ascii=False)
+                page.quality_recommendations = json.dumps(quality_result['recommendations'], ensure_ascii=False)
+
+                logger.info(f"Quality verification complete: Score={quality_result['score']}, Level={quality_result['quality_level']}")
+
+                # Log issues if any
+                if quality_result['issues']:
+                    logger.warning(f"Found {len(quality_result['issues'])} quality issues")
+                    for issue in quality_result['issues']:
+                        logger.warning(f"  - [{issue['severity']}] {issue['message']}")
+
+            except Exception as qe:
+                logger.error(f"Quality verification failed: {qe}")
+                # Don't fail the whole task if quality check fails
+                page.quality_score = None
+                page.quality_level = "Unknown"
+
             if not os.path.exists(pdf_path):
                 error_msg = f"PDF not created at expected path: {pdf_path}"
                 logger.error(error_msg)
@@ -194,7 +253,13 @@ def process_page_task(self, page_id: int, project_id: int):
                 logger.warning(f"Failed to persist artifacts JSON for page {page_id}: {e}")
             
             # Update page in database
-            page.status = PageStatus.COMPLETED
+            # Set status based on quality score
+            if page.quality_score is not None and page.quality_score < 70:
+                page.status = PageStatus.NEEDS_REVIEW
+                logger.warning(f"Page {page_id} marked as NEEDS_REVIEW (quality score: {page.quality_score})")
+            else:
+                page.status = PageStatus.COMPLETED
+
             page.ocr_text = ocr_text
             page.translated_text = trans_text
             page.output_pdf_path = output_gcs_path

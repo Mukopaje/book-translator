@@ -88,18 +88,42 @@ async def upload_page(
 def list_pages(
     project_id: int,
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 20,  # Default to 20 pages per request for better performance
+    status_filter: str = None,  # Optional: filter by status (e.g., "COMPLETED", "NEEDS_REVIEW")
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """List all pages in a project."""
+    """
+    List pages in a project with pagination and optional filtering.
+
+    Args:
+        project_id: Project ID
+        skip: Number of pages to skip (for pagination)
+        limit: Maximum number of pages to return (default: 20, max: 500)
+        status_filter: Optional status filter (UPLOADED, PROCESSING, COMPLETED, FAILED, NEEDS_REVIEW)
+    """
     # Verify access
     verify_project_access(project_id, current_user, db)
-    
+
+    # Limit the maximum page size to prevent overload
+    limit = min(limit, 500)
+
+    # Build query with optional status filter
     query = db.query(Page).filter(Page.project_id == project_id)
+
+    if status_filter:
+        # Handle multiple statuses separated by comma
+        statuses = [s.strip().upper() for s in status_filter.split(',')]
+        valid_statuses = [s for s in statuses if s in PageStatus.__members__]
+        if valid_statuses:
+            query = query.filter(Page.status.in_(valid_statuses))
+
+    # Get total count before pagination
     total = query.count()
+
+    # Apply pagination and ordering
     pages = query.order_by(Page.page_number).offset(skip).limit(limit).all()
-    
+
     return {"pages": pages, "total": total}
 
 
@@ -215,6 +239,76 @@ def get_download_url(
     signed_url = storage_service.get_signed_url(bucket, blob_path, expiration=3600)
     
     return {"url": signed_url, "expires_in": 3600}
+
+
+@router.put("/{page_id}/replace-image", response_model=PageResponse)
+async def replace_page_image(
+    project_id: int,
+    page_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Replace the input image for a page and reset its processing status.
+    Useful when the original scan quality was poor and affecting output quality.
+
+    Args:
+        project_id: Project ID
+        page_id: Page ID
+        file: New image file to replace the original
+
+    Returns:
+        Updated page with reset status
+    """
+    # Verify access
+    verify_project_access(project_id, current_user, db)
+
+    page = db.query(Page).filter(
+        Page.id == page_id,
+        Page.project_id == project_id
+    ).first()
+
+    if not page:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Page not found"
+        )
+
+    # Store previous status to adjust project counts
+    was_completed = page.status in [PageStatus.COMPLETED, PageStatus.NEEDS_REVIEW]
+
+    # Upload new image to storage
+    new_gcs_path = storage_service.upload_original_image(
+        file.file,
+        project_id,
+        page.page_number,
+        file.filename or f"page_{page.page_number}_replaced.jpg"
+    )
+
+    # Reset page status and clear previous results
+    page.original_image_path = new_gcs_path
+    page.status = PageStatus.UPLOADED
+    page.error_message = None
+    page.quality_score = None
+    page.quality_level = None
+    page.quality_issues = None
+    page.quality_recommendations = None
+    page.ocr_text = None
+    page.translated_text = None
+    page.output_pdf_path = None
+    page.processed_at = None
+    page.replaced_at = datetime.utcnow()
+
+    # Update project completed count if this was previously completed
+    if was_completed:
+        project = page.project
+        project.completed_pages = max(0, project.completed_pages - 1)
+
+    db.commit()
+    db.refresh(page)
+
+    return page
 
 
 @router.delete("/{page_id}", status_code=status.HTTP_204_NO_CONTENT)

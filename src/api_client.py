@@ -41,18 +41,28 @@ class APIClient:
         data = response.json()
         self.token = data["access_token"]
         return self.token
-    
+
+    def get_current_user(self) -> Dict[str, Any]:
+        """Get current authenticated user information."""
+        response = requests.get(
+            f"{self.base_url}/auth/me",
+            headers=self._headers()
+        )
+        response.raise_for_status()
+        return response.json()
+
     # Projects
-    def create_project(self, title: str, author: str = "", book_context: str = "") -> Dict[str, Any]:
-        """Create new project."""
+    def create_project(self, title: str, author: str = "", book_context: str = "",
+                      source_language: str = "auto", target_language: str = "en") -> Dict[str, Any]:
+        """Create new project with language selection."""
         response = requests.post(
             f"{self.base_url}/projects",
             headers=self._headers(),
             json={
                 "title": title,
                 "author": author,
-                "source_language": "ja",
-                "target_language": "en",
+                "source_language": source_language,
+                "target_language": target_language,
                 "book_context": book_context
             }
         )
@@ -135,14 +145,31 @@ class APIClient:
         response.raise_for_status()
         return response.json()
     
-    def list_pages(self, project_id: int) -> list:
-        """Get project pages."""
+    def list_pages(self, project_id: int, skip: int = 0, limit: int = 20,
+                   status_filter: str = None) -> Dict[str, Any]:
+        """
+        Get project pages with pagination and optional filtering.
+
+        Args:
+            project_id: Project ID
+            skip: Number of pages to skip (for pagination)
+            limit: Maximum pages to return (default 20, max 500)
+            status_filter: Optional comma-separated status filter (e.g., "COMPLETED,NEEDS_REVIEW")
+
+        Returns:
+            Dictionary with 'pages' list and 'total' count
+        """
+        params = {"skip": skip, "limit": limit}
+        if status_filter:
+            params["status_filter"] = status_filter
+
         response = requests.get(
             f"{self.base_url}/projects/{project_id}/pages",
-            headers=self._headers()
+            headers=self._headers(),
+            params=params
         )
         response.raise_for_status()
-        return response.json()["pages"]
+        return response.json()  # Returns {'pages': [...], 'total': N}
     
     def get_page(self, project_id: int, page_id: int) -> Dict[str, Any]:
         """Get page details."""
@@ -163,8 +190,8 @@ class APIClient:
         response.raise_for_status()
         return response.json()
     
-    def update_page(self, project_id: int, page_id: int, status: str = None, 
-                   ocr_text: str = None, translated_text: str = None, 
+    def update_page(self, project_id: int, page_id: int, status: str = None,
+                   ocr_text: str = None, translated_text: str = None,
                    output_pdf_path: str = None) -> Dict[str, Any]:
         """Update page status and results."""
         data = {}
@@ -176,11 +203,39 @@ class APIClient:
             data['translated_text'] = translated_text
         if output_pdf_path:
             data['output_pdf_path'] = output_pdf_path
-        
+
         response = requests.patch(
             f"{self.base_url}/projects/{project_id}/pages/{page_id}",
             headers=self._headers(),
             json=data
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def replace_page_image(self, project_id: int, page_id: int, file: BinaryIO,
+                          filename: str = None) -> Dict[str, Any]:
+        """
+        Replace the input image for a page.
+
+        Args:
+            project_id: Project ID
+            page_id: Page ID to replace
+            file: New image file (binary)
+            filename: Optional filename
+
+        Returns:
+            Updated page data with reset status
+        """
+        files = {"file": (filename or "replaced_image.jpg", file, "image/jpeg")}
+
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        response = requests.put(
+            f"{self.base_url}/projects/{project_id}/pages/{page_id}/replace-image",
+            headers=headers,
+            files=files
         )
         response.raise_for_status()
         return response.json()
@@ -204,7 +259,17 @@ class APIClient:
         )
         response.raise_for_status()
         return response.json()
-    
+
+    def queue_by_status(self, project_id: int, statuses: list[str]) -> Dict[str, Any]:
+        """Queue all pages in a project with specific statuses."""
+        response = requests.post(
+            f"{self.base_url}/jobs/queue-by-status/{project_id}",
+            headers=self._headers(),
+            json=statuses
+        )
+        response.raise_for_status()
+        return response.json()
+
     def get_task_status(self, task_id: str) -> Dict[str, Any]:
         """Get status of a background task."""
         response = requests.get(

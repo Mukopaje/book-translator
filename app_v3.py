@@ -134,6 +134,16 @@ def init_state():
     if 'reprocess_comparison' not in st.session_state:
         st.session_state['reprocess_comparison'] = None
 
+    # NEW: Pagination state
+    if 'current_page_offset' not in st.session_state:
+        st.session_state.current_page_offset = 0
+    if 'page_size' not in st.session_state:
+        st.session_state.page_size = 20  # Show 20 pages at a time
+    if 'total_pages_count' not in st.session_state:
+        st.session_state.total_pages_count = 0
+    if 'status_filter' not in st.session_state:
+        st.session_state.status_filter = None
+
 def render_auth_page():
     """Render login/signup page."""
     api = get_api_client()
@@ -528,10 +538,24 @@ def render_sidebar():
         # Load projects
         try:
             projects = api.list_projects()
-            
+
             if projects:
                 project_options = {p["id"]: f"{p['title']}" for p in projects}
-                
+
+                # Auto-select first project if none selected (helps after page reload)
+                if not st.session_state.current_project and projects:
+                    first_project = projects[0]
+                    st.session_state.current_project = first_project
+                    st.session_state['metadata']['title'] = first_project['title']
+                    st.session_state['metadata']['author'] = first_project.get('author', '')
+                    st.session_state['metadata']['context'] = first_project.get('book_context', '')
+                    st.session_state['pages'] = []
+                    st.session_state.pages_loaded_from_backend = False
+                    st.session_state.current_page_offset = 0
+                    st.session_state.status_filter = None
+                    st.session_state.total_pages_count = 0
+                    logger.info(f"Auto-selected first project: {first_project['title']}")
+
                 # Current project selector
                 current_id = st.session_state.current_project['id'] if st.session_state.current_project else None
                 selected_id = st.selectbox(
@@ -551,6 +575,10 @@ def render_sidebar():
                         # Clear pages and reload from backend
                         st.session_state['pages'] = []
                         st.session_state.pages_loaded_from_backend = False
+                        # IMPORTANT: Reset pagination when switching projects
+                        st.session_state.current_page_offset = 0
+                        st.session_state.status_filter = None
+                        st.session_state.total_pages_count = 0
                         st.success(f"✅ Loaded: {project['title']}")
                         st.rerun()
                     except Exception as e:
@@ -568,22 +596,84 @@ def render_sidebar():
             with st.form("new_project"):
                 title = st.text_input("Book Title")
                 author = st.text_input("Author")
-                context = st.text_area("Book Context", 
+                context = st.text_area("Book Context",
                     help="Describe the book's subject matter for better translations")
-                
+
+                # Language selection
+                st.markdown("**Language Settings**")
+                col1, col2 = st.columns(2)
+
+                # Define language options
+                source_languages = {
+                    'auto': 'Auto-Detect',
+                    'ja': 'Japanese (日本語)',
+                    'zh': 'Chinese Simplified (简体中文)',
+                    'zh-TW': 'Chinese Traditional (繁體中文)',
+                    'ko': 'Korean (한국어)',
+                    'en': 'English',
+                    'es': 'Spanish (Español)',
+                    'fr': 'French (Français)',
+                    'de': 'German (Deutsch)',
+                    'pt': 'Portuguese (Português)',
+                    'it': 'Italian (Italiano)',
+                    'ru': 'Russian (Русский)',
+                    'ar': 'Arabic (العربية)',
+                    'th': 'Thai (ไทย)',
+                    'vi': 'Vietnamese (Tiếng Việt)',
+                    'tr': 'Turkish (Türkçe)',
+                    'hi': 'Hindi (हिन्दी)',
+                }
+
+                target_languages = {
+                    'en': 'English',
+                    'es': 'Spanish (Español)',
+                    'fr': 'French (Français)',
+                    'de': 'German (Deutsch)',
+                    'pt': 'Portuguese (Português)',
+                    'it': 'Italian (Italiano)',
+                    'ja': 'Japanese (日本語)',
+                    'zh': 'Chinese Simplified (简体中文)',
+                    'zh-TW': 'Chinese Traditional (繁體中文)',
+                    'ko': 'Korean (한국어)',
+                    'ru': 'Russian (Русский)',
+                    'ar': 'Arabic (العربية)',
+                    'th': 'Thai (ไทย)',
+                    'vi': 'Vietnamese (Tiếng Việt)',
+                    'tr': 'Turkish (Türkçe)',
+                    'hi': 'Hindi (हिन्दी)',
+                }
+
+                with col1:
+                    source_lang = st.selectbox(
+                        "Source Language",
+                        options=list(source_languages.keys()),
+                        format_func=lambda x: source_languages[x],
+                        index=0,  # Default to 'auto'
+                        help="Select 'Auto-Detect' to automatically identify the source language"
+                    )
+
+                with col2:
+                    target_lang = st.selectbox(
+                        "Target Language",
+                        options=list(target_languages.keys()),
+                        format_func=lambda x: target_languages[x],
+                        index=0,  # Default to 'en'
+                        help="Language to translate into"
+                    )
+
                 if st.form_submit_button("Create Project"):
                     if not title:
                         st.error("Title is required")
                     else:
                         try:
-                            project = api.create_project(title, author, context)
+                            project = api.create_project(title, author, context, source_lang, target_lang)
                             st.session_state.current_project = project
                             st.session_state['metadata']['title'] = title
                             st.session_state['metadata']['author'] = author
                             st.session_state['metadata']['context'] = context
                             st.session_state['pages'] = []
                             st.session_state.pages_loaded_from_backend = False
-                            st.success(f"✅ Created: {title}")
+                            st.success(f"✅ Created: {title} ({source_languages[source_lang]} → {target_languages[target_lang]})")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed to create project: {e}")
@@ -596,6 +686,18 @@ def render_sidebar():
             st.write(f"**Title:** {proj['title']}")
             st.write(f"**Author:** {proj.get('author', 'N/A')}")
             st.write(f"**Progress:** {proj['completed_pages']}/{proj['total_pages']} pages")
+
+            # Display language information
+            source_lang = proj.get('source_language', 'auto')
+            target_lang = proj.get('target_language', 'en')
+            detected_lang = proj.get('source_language_detected')
+            confidence = proj.get('source_language_confidence')
+
+            if source_lang == 'auto' and detected_lang:
+                confidence_pct = int(confidence * 100) if confidence else 0
+                st.write(f"**Languages:** {detected_lang.upper()} (detected, {confidence_pct}% confidence) → {target_lang.upper()}")
+            else:
+                st.write(f"**Languages:** {source_lang.upper()} → {target_lang.upper()}")
             
             # Download complete book button
             if proj.get('completed_pages', 0) > 0:
@@ -645,18 +747,35 @@ def render_page_list():
         st.warning("⚠️ Please select or create a project first")
         return
     
-    # Load pages from backend only once per project load
+    # Load pages from backend with pagination
     if not st.session_state.pages_loaded_from_backend:
         try:
             api = get_api_client()
             project_id = st.session_state.current_project['id']
-            backend_pages = api.list_pages(project_id)
-            
-            logger.info(f"Loaded {len(backend_pages)} pages from backend")
+
+            # Use pagination parameters from session state
+            offset = st.session_state.current_page_offset
+            page_size = st.session_state.page_size
+            status_filter = st.session_state.status_filter
+
+            # Fetch paginated pages from backend
+            result = api.list_pages(
+                project_id,
+                skip=offset,
+                limit=page_size,
+                status_filter=status_filter
+            )
+
+            backend_pages = result['pages']
+            total_count = result['total']
+
+            logger.info(f"Loaded {len(backend_pages)} pages from backend (total: {total_count}, offset: {offset})")
             # Log each page status for debugging
             for p in backend_pages:
                 logger.info(f"  Page {p.get('page_number')}: status={p.get('status')}, id={p.get('id')}")
+
             st.session_state['pages'] = backend_pages
+            st.session_state.total_pages_count = total_count
             st.session_state.pages_loaded_from_backend = True
         except Exception as e:
             logger.warning(f"Failed to load pages from backend: {e}")
@@ -684,10 +803,26 @@ def render_page_list():
                 with col_b:
                     st.info("You will be redirected to the login page after re-auth.")
     
-    st.header(f"Pages ({len(st.session_state['pages'])})")
+    # Header with total count and pagination info
+    total = st.session_state.total_pages_count
+    offset = st.session_state.current_page_offset
+    page_size = st.session_state.page_size
+    current_page_num = (offset // page_size) + 1
+    total_page_groups = (total + page_size - 1) // page_size if total > 0 else 1
+
+    st.header(f"Pages ({total} total)")
+
+    # Show filter status if active
+    if st.session_state.status_filter:
+        st.caption(f"🔍 Filtered by: **{st.session_state.status_filter}** | Showing page {current_page_num} of {total_page_groups} ({page_size} pages per view)")
+    else:
+        st.caption(f"Showing page {current_page_num} of {total_page_groups} ({page_size} pages per view)")
     
     if not st.session_state['pages']:
-        st.info("Upload pages to begin.")
+        if st.session_state.status_filter:
+            st.info(f"No pages found with status '{st.session_state.status_filter}'. Try changing the filter or upload pages to begin.")
+        else:
+            st.info("Upload pages to begin.")
         return
     
     # Check if any pages are processing
@@ -705,12 +840,113 @@ def render_page_list():
         # or the local state is stale.
         pass
 
+    # NEW: Pagination controls
+    st.markdown("---")
+
+    # First row: Page size and filter
+    size_col, filter_col = st.columns([1, 2])
+
+    with size_col:
+        page_size_options = [20, 50, 100, 500]
+        current_page_size = st.session_state.page_size
+        selected_page_size = st.selectbox(
+            "Pages per view",
+            options=page_size_options,
+            index=page_size_options.index(current_page_size) if current_page_size in page_size_options else 0,
+            key="page_size_select",
+            help="Number of pages to display at once (max 500 for bulk operations)"
+        )
+
+        if selected_page_size != current_page_size:
+            st.session_state.page_size = selected_page_size
+            st.session_state.current_page_offset = 0  # Reset to first page
+            st.session_state.pages_loaded_from_backend = False
+            st.rerun()
+
+    with filter_col:
+        # Status filter with all possible statuses
+        status_options = ["All", "UPLOADED", "QUEUED", "PROCESSING", "COMPLETED", "FAILED", "NEEDS_REVIEW"]
+        current_filter = st.session_state.status_filter or "All"
+        selected_filter = st.selectbox(
+            "Filter by status",
+            options=status_options,
+            index=status_options.index(current_filter) if current_filter in status_options else 0,
+            key="status_filter_select",
+            help="Filter pages by their processing status"
+        )
+
+        if selected_filter != current_filter:
+            st.session_state.status_filter = None if selected_filter == "All" else selected_filter
+            st.session_state.current_page_offset = 0  # Reset to first page when filtering
+            st.session_state.pages_loaded_from_backend = False
+            st.rerun()
+
+    # Second row: Navigation buttons
+    pagination_col1, pagination_col2, pagination_col3, pagination_col4, pagination_col5 = st.columns([1, 1, 1.5, 1, 1])
+
+    with pagination_col1:
+        if st.button("⏮️ First", disabled=offset == 0, key="first_page"):
+            st.session_state.current_page_offset = 0
+            st.session_state.pages_loaded_from_backend = False
+            st.rerun()
+
+    with pagination_col2:
+        if st.button("◀️ Prev", disabled=offset == 0, key="prev_page"):
+            st.session_state.current_page_offset = max(0, offset - page_size)
+            st.session_state.pages_loaded_from_backend = False
+            st.rerun()
+
+    with pagination_col3:
+        st.markdown(f"**Page {current_page_num} / {total_page_groups}**")
+
+    with pagination_col4:
+        if st.button("Next ▶️", disabled=offset + page_size >= total, key="next_page"):
+            st.session_state.current_page_offset = min(total - page_size, offset + page_size)
+            st.session_state.pages_loaded_from_backend = False
+            st.rerun()
+
+    with pagination_col5:
+        if st.button("Last ⏭️", disabled=offset + page_size >= total, key="last_page"):
+            last_page_offset = ((total - 1) // page_size) * page_size
+            st.session_state.current_page_offset = last_page_offset
+            st.session_state.pages_loaded_from_backend = False
+            st.rerun()
+
+    st.markdown("---")
+
     # Batch actions
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
+    col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1.5, 1.5])
     with col1:
-        if st.button("🚀 Queue All (Async)"):
-            api = get_api_client()
-            # Collect only backend numeric IDs; skip local UUID-only entries
+        # Select all on current page
+        if st.button(f"☑️ Select Page ({len(st.session_state['pages'])})", key="select_all_page"):
+            for i in range(len(st.session_state['pages'])):
+                page = st.session_state['pages'][i]
+                if page.get('status') in ['completed', 'failed', 'COMPLETED', 'FAILED', 'NEEDS_REVIEW']:
+                    st.session_state['selected_pages'].add(i)
+            st.rerun()
+
+    with col2:
+        # Queue All with status selection
+        with st.popover("🚀 Queue All", use_container_width=True):
+            st.markdown("**Select statuses to queue:**")
+
+            # Default to UPLOADED and FAILED
+            queue_uploaded = st.checkbox("📤 UPLOADED", value=True, key="queue_uploaded")
+            queue_failed = st.checkbox("❌ FAILED", value=True, key="queue_failed")
+            queue_needs_review = st.checkbox("⚠️ NEEDS_REVIEW", value=False, key="queue_needs_review")
+
+            st.markdown("---")
+
+            # Count pages matching selected statuses
+            statuses_to_queue = []
+            if queue_uploaded:
+                statuses_to_queue.extend(['uploaded', 'UPLOADED'])
+            if queue_failed:
+                statuses_to_queue.extend(['failed', 'FAILED'])
+            if queue_needs_review:
+                statuses_to_queue.extend(['needs_review', 'NEEDS_REVIEW'])
+
+            # Helper function to get backend ID
             def _backend_id(p):
                 val = p.get('id')
                 if isinstance(val, int):
@@ -728,7 +964,7 @@ def render_page_list():
                     return None
 
             candidate_pages = [p for p in st.session_state['pages']
-                               if p.get('status') in ['uploaded', 'failed', 'UPLOADED', 'FAILED']]
+                               if p.get('status') in statuses_to_queue]
             pending_ids = []
             for p in candidate_pages:
                 bid = _backend_id(p)
@@ -737,29 +973,82 @@ def render_page_list():
             # De-duplicate
             pending_ids = list(dict.fromkeys(pending_ids))
 
-            if pending_ids:
-                try:
-                    result = api.queue_batch_processing(pending_ids)
-                    st.success(f"✅ Queued {len(pending_ids)} pages!")
-                    st.info(f"Task ID: {result['task_id']}")
-                    time.sleep(1)
-                    st.session_state.pages_loaded_from_backend = False
-                    st.rerun()
-                except Exception as e:
-                    # Try to show more server detail when available
+            st.caption(f"Will queue {len(pending_ids)} page(s) from current view")
+
+            if st.button("✅ Queue Selected Statuses", type="primary", use_container_width=True):
+                if not statuses_to_queue:
+                    st.warning("Please select at least one status")
+                elif pending_ids:
                     try:
-                        st.error(f"Failed to queue: {e.response.text}")
-                    except Exception:
-                        st.error(f"Failed to queue: {e}")
-            else:
-                st.warning("No backend pages to queue (skip local-only entries)")
-    
-    with col2:
-        if st.button("🔄 Refresh Status"):
+                        api = get_api_client()
+                        result = api.queue_batch_processing(pending_ids)
+                        st.success(f"✅ Queued {len(pending_ids)} pages!")
+                        st.info(f"Task ID: {result['task_id']}")
+                        time.sleep(1)
+                        st.session_state.pages_loaded_from_backend = False
+                        st.rerun()
+                    except Exception as e:
+                        # Try to show more server detail when available
+                        try:
+                            st.error(f"Failed to queue: {e.response.text}")
+                        except Exception:
+                            st.error(f"Failed to queue: {e}")
+                else:
+                    st.warning("No pages match the selected statuses")
+
+    with col3:
+        # Queue All Project - queues across entire project, not just current view
+        with st.popover("🚀🌐 Queue Project", use_container_width=True):
+            st.markdown("**Queue across entire project:**")
+            st.caption("This will queue pages from ALL pages in the project, not just the current view")
+
+            # Default to UPLOADED and FAILED
+            queue_proj_uploaded = st.checkbox("📤 UPLOADED", value=True, key="queue_proj_uploaded")
+            queue_proj_failed = st.checkbox("❌ FAILED", value=True, key="queue_proj_failed")
+            queue_proj_needs_review = st.checkbox("⚠️ NEEDS_REVIEW", value=False, key="queue_proj_needs_review")
+
+            st.markdown("---")
+
+            # Build status list
+            project_statuses = []
+            if queue_proj_uploaded:
+                project_statuses.append('UPLOADED')
+            if queue_proj_failed:
+                project_statuses.append('FAILED')
+            if queue_proj_needs_review:
+                project_statuses.append('NEEDS_REVIEW')
+
+            st.caption(f"Will queue ALL pages with selected statuses in project (up to 500)")
+
+            if st.button("✅ Queue Entire Project", type="primary", use_container_width=True):
+                if not project_statuses:
+                    st.warning("Please select at least one status")
+                else:
+                    try:
+                        api = get_api_client()
+                        project_id = st.session_state.current_project['id']
+                        result = api.queue_by_status(project_id, project_statuses)
+
+                        if result.get('count', 0) > 0:
+                            st.success(f"✅ Queued {result['count']} pages across entire project!")
+                            st.info(f"Task ID: {result['task_id']}")
+                            time.sleep(1)
+                            st.session_state.pages_loaded_from_backend = False
+                            st.rerun()
+                        else:
+                            st.info(result.get('message', 'No pages found matching the selected statuses'))
+                    except Exception as e:
+                        try:
+                            st.error(f"Failed to queue: {e.response.text}")
+                        except Exception:
+                            st.error(f"Failed to queue: {e}")
+
+    with col4:
+        if st.button("🔄 Refresh Status", key="refresh_status"):
             st.session_state.pages_loaded_from_backend = False
             st.rerun()
-    
-    with col3:
+
+    with col5:
         # Reprocess selected pages button - calculate count right before rendering
         # to ensure we have the latest session state value
         if 'selected_pages' not in st.session_state:
@@ -931,6 +1220,37 @@ def render_page_list():
                         for w in page['warnings']:
                             st.warning(w)
                     
+                    # Show quality score for completed/needs_review pages
+                    if page.get('quality_score') is not None:
+                        score = page['quality_score']
+                        level = page.get('quality_level', 'Unknown')
+
+                        # Color code the quality level
+                        if score >= 90:
+                            quality_color = "green"
+                        elif score >= 70:
+                            quality_color = "blue"
+                        elif score >= 50:
+                            quality_color = "orange"
+                        else:
+                            quality_color = "red"
+
+                        st.write(f"**Quality:** :{quality_color}[{level} ({score}/100)]")
+
+                        # Show quality issues if present
+                        if page.get('quality_issues'):
+                            import json
+                            try:
+                                issues = json.loads(page['quality_issues'])
+                                if issues:
+                                    with st.expander(f"⚠️ {len(issues)} Quality Issues"):
+                                        for issue in issues[:3]:  # Show first 3
+                                            st.caption(f"• [{issue['severity']}] {issue['message']}")
+                                        if len(issues) > 3:
+                                            st.caption(f"... and {len(issues) - 3} more")
+                            except:
+                                pass
+
                     # Show processing stats for completed pages
                     if page.get('status') == 'completed':
                         if page.get('results'):
@@ -1003,7 +1323,45 @@ def render_page_list():
                                     st.error(f"Failed: {e.response.text}")
                                 except Exception:
                                     st.error(f"Failed: {e}")
-                    
+
+                    # NEW: Replace Image button for failed or low quality pages
+                    show_replace = (
+                        page_status.upper() in ['FAILED', 'NEEDS_REVIEW'] or
+                        (page.get('quality_score') is not None and page['quality_score'] < 70)
+                    )
+
+                    if show_replace:
+                        replace_file = st.file_uploader(
+                            f"🔄 Replace Image",
+                            type=['jpg', 'jpeg', 'png'],
+                            key=f"replace_{i}",
+                            label_visibility="collapsed",
+                            help="Upload a better quality image to replace this page"
+                        )
+
+                        if replace_file:
+                            try:
+                                api = get_api_client()
+                                project_id = st.session_state.current_project['id']
+                                page_id = page.get('id')
+
+                                if page_id:
+                                    with st.spinner("Replacing image..."):
+                                        updated_page = api.replace_page_image(
+                                            project_id,
+                                            page_id,
+                                            replace_file,
+                                            replace_file.name
+                                        )
+                                    st.success("✅ Image replaced! Page reset to 'UPLOADED' status.")
+                                    time.sleep(1)
+                                    st.session_state.pages_loaded_from_backend = False
+                                    st.rerun()
+                                else:
+                                    st.error("Cannot replace local-only page")
+                            except Exception as e:
+                                st.error(f"Failed to replace: {e}")
+
                     if st.button("Remove", key=f"rem_{i}"):
                         st.session_state['pages'].pop(i)
                         st.rerun()
@@ -1193,13 +1551,13 @@ def main():
                 token = st.query_params['token']
                 api = get_api_client()
                 api.token = token
-                # Verify token by trying to get projects
-                api.list_projects()
+                # Verify token and get user info
+                user_info = api.get_current_user()
                 # Token is valid
                 st.session_state.logged_in = True
                 st.session_state.token = token
-                st.session_state.current_user = {"email": "user@example.com"}  # We don't store email
-                logger.info("Restored session from query params")
+                st.session_state.current_user = {"email": user_info.get('email', 'user@example.com')}
+                logger.info(f"Restored session for user: {user_info.get('email')}")
             except Exception as e:
                 logger.warning(f"Failed to restore session: {e}")
                 # Clear invalid token

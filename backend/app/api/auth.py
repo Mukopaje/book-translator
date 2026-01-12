@@ -5,6 +5,7 @@ from app.database import get_db
 from app.models.db_models import User
 from app.models.schemas import UserCreate, UserLogin, UserResponse, Token
 from app.services.auth import get_password_hash, verify_password, create_access_token
+from app.api.dependencies import get_current_user
 from datetime import timedelta
 from app.config import settings
 
@@ -65,5 +66,11 @@ def login(credentials: UserLogin, db: Session = Depends(get_db)):
         data={"sub": str(user.id)},
         expires_delta=timedelta(minutes=settings.access_token_expire_minutes)
     )
-    
+
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.get("/me", response_model=UserResponse)
+def get_me(current_user: User = Depends(get_current_user)):
+    """Get current user information."""
+    return current_user

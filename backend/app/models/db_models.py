@@ -1,5 +1,5 @@
 """Database models for users, projects, and pages."""
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -21,6 +21,7 @@ class PageStatus(str, enum.Enum):
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"  # Quality check failed, needs manual review
 
 
 class User(Base):
@@ -48,8 +49,10 @@ class Project(Base):
     # Book metadata
     title = Column(String(500), nullable=False)
     author = Column(String(255), nullable=True)
-    source_language = Column(String(10), default="ja")  # ISO 639-1 code
-    target_language = Column(String(10), default="en")
+    source_language = Column(String(10), default="auto")  # ISO 639-1 code or 'auto' for detection
+    target_language = Column(String(10), default="en")  # Target language for translation
+    source_language_detected = Column(String(10), nullable=True)  # Actual detected language
+    source_language_confidence = Column(Float, nullable=True)  # Detection confidence (0-1)
     book_context = Column(Text, nullable=True)  # Global context for translations
     
     # Status
@@ -85,11 +88,22 @@ class Page(Base):
     ocr_text = Column(Text, nullable=True)  # Original OCR text
     translated_text = Column(Text, nullable=True)  # Translated text
     error_message = Column(Text, nullable=True)  # Error if processing failed
-    
+
+    # Quality verification
+    quality_score = Column(Integer, nullable=True)  # 0-100 quality score
+    quality_level = Column(String(50), nullable=True)  # Excellent, Good, Acceptable, Poor, Failed
+    quality_issues = Column(Text, nullable=True)  # JSON array of quality issues
+    quality_recommendations = Column(Text, nullable=True)  # JSON array of recommendations
+
+    # Language detection (per-page)
+    detected_language = Column(String(10), nullable=True)  # Detected language for this page
+    language_confidence = Column(Float, nullable=True)  # Detection confidence (0-1)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     processed_at = Column(DateTime(timezone=True), nullable=True)
-    
+    replaced_at = Column(DateTime(timezone=True), nullable=True)  # When image was last replaced
+
     # Relationships
     project = relationship("Project", back_populates="pages")

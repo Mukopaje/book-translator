@@ -44,7 +44,7 @@ class LayoutAgent:
             # Prepare the prompt
             prompt = """
             You are a Document Layout Analysis expert. Analyze this technical manual page.
-            
+
             Identify and return bounding boxes for the following semantic regions:
             1. "text_block": Main prose text (paragraphs, lists). NOT labels inside diagrams.
             2. "technical_diagram": Engineering drawings, schematics, cross-sections (e.g. engine parts). IMPORTANT: Include ALL associated labels, callouts, and keys/legends within this box.
@@ -52,19 +52,45 @@ class LayoutAgent:
             4. "table": Structured data tables with rows/columns.
             5. "header_footer": Page numbers, running titles.
             6. "caption": Text explicitly describing a figure or table (usually starts with "Fig" or "Table").
-            
-            CRITICAL: 
+
+            CRITICAL:
             - Distinguish between "technical_diagram" (schematic) and "chart" (data plot).
-            - Distinguish between "text_block" (prose) and "diagram labels" (short text pointing to parts). 
+            - Distinguish between "text_block" (prose) and "diagram labels" (short text pointing to parts).
             - Diagram labels MUST be included inside the "technical_diagram" or "chart" region box. Do NOT mark them as "text_block".
             - If a page is mostly a large diagram with many labels, return one large "technical_diagram" region that covers them all.
-            
+
+            MULTI-COLUMN LAYOUT DETECTION:
+            - Determine if the page uses a multi-column layout (e.g., 2-column, 3-column)
+            - If columns exist, assign each region a "column" number (1, 2, 3, etc.) from left to right
+            - The "column" field indicates which column the region belongs to
+            - Single-column pages should use column=1 for all regions
+            - Regions that span multiple columns (like full-width diagrams or tables) should use column=0
+
+            READING ORDER:
+            - Assign a "reading_order" number to each region (1, 2, 3, etc.)
+            - For multi-column layouts: Process left column top-to-bottom, then right column top-to-bottom
+            - Example 2-column: Left col regions get order 1,2,3, then right col gets 4,5,6
+            - For single-column: Simply top-to-bottom (1, 2, 3, etc.)
+
+            PAGE NUMBER EXTRACTION:
+            - Look for the page number on this page. It will typically be:
+              * A standalone number at the top or bottom of the page
+              * The FIRST number you see at the very top (before main content)
+              * OR the LAST number at the very bottom (after main content)
+              * It might be surrounded by dashes (e.g., "- 123 -") or standalone
+            - If you find a page number, include it in the "page_number" field
+            - If no page number is visible, set "page_number" to null
+
             Output strictly valid JSON with this structure:
             {
+                "page_number": 123 | null,
+                "layout_columns": 1 | 2 | 3,  // Number of columns detected
                 "regions": [
                     {
                         "type": "technical_diagram" | "chart" | "text_block" | "table" | "header_footer" | "caption",
                         "box_2d": [ymin, xmin, ymax, xmax],  // Normalized coordinates (0-1000)
+                        "column": 0 | 1 | 2 | 3,  // Which column (0=spans all, 1=left, 2=middle/right, etc.)
+                        "reading_order": 1,  // Order to read this region (1, 2, 3, ...)
                         "confidence": 0-1.0
                     }
                 ]
@@ -84,11 +110,16 @@ class LayoutAgent:
             # Parse response
             try:
                 result = json.loads(response.text)
-                
+
+                # Extract page number
+                page_number = result.get("page_number")
+                if page_number:
+                    print(f"[LayoutAgent] Detected page number: {page_number}")
+
                 # Convert normalized coordinates (0-1000) to pixel coordinates
                 width, height = img.size
                 regions = result.get("regions", [])
-                
+
                 converted_regions = []
                 for r in regions:
                     # Gemini returns [ymin, xmin, ymax, xmax] in 0-1000 scale
@@ -103,12 +134,12 @@ class LayoutAgent:
                         }
                         r["box_pixel"] = pixel_box
                         converted_regions.append(r)
-                
+
                 print(f"[LayoutAgent] Detected {len(converted_regions)} regions.")
                 for r in converted_regions:
                     print(f"  - {r['type']}: {r['box_pixel']}")
-                    
-                return {"success": True, "regions": converted_regions}
+
+                return {"success": True, "regions": converted_regions, "page_number": page_number}
                 
             except json.JSONDecodeError as e:
                 print(f"[LayoutAgent] Error parsing JSON response: {e}")
