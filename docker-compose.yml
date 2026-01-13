@@ -5,7 +5,7 @@ services:
       dockerfile: src/Dockerfile
     container_name: book-translator-frontend
     ports:
-      - "8501:8501"
+      - "7501:8501"
     volumes:
       - .:/app
       - ./storage:/storage
@@ -21,7 +21,7 @@ services:
       dockerfile: backend/Dockerfile
     container_name: book-translator-backend
     ports:
-      - "8000:8000"
+      - "7100:8000"
     volumes:
       - ./backend:/app
       - ./storage:/storage
@@ -65,9 +65,7 @@ services:
     command: celery -A app.celery_app worker --loglevel=debug
 
   beat:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
+    image: book-translator-backend:latest
     container_name: book-translator-beat
     volumes:
       - ./backend:/app
@@ -94,7 +92,7 @@ services:
       POSTGRES_USER: translator
       POSTGRES_PASSWORD: translator123
     ports:
-      - "5433:5432"
+      - "7532:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -103,7 +101,7 @@ services:
     image: redis:alpine
     container_name: book-translator-redis
     ports:
-      - "6380:6379"
+      - "7579:6379"
     restart: unless-stopped
     command: redis-server --appendonly yes
     volumes:

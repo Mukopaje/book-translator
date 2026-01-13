@@ -917,12 +917,30 @@ def render_page_list():
     # Batch actions
     col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1.5, 1.5])
     with col1:
-        # Select all on current page
-        if st.button(f"☑️ Select Page ({len(st.session_state['pages'])})", key="select_all_page"):
-            for i in range(len(st.session_state['pages'])):
-                page = st.session_state['pages'][i]
-                if page.get('status') in ['completed', 'failed', 'COMPLETED', 'FAILED', 'NEEDS_REVIEW']:
-                    st.session_state['selected_pages'].add(i)
+        # Select/Deselect all on current page
+        selectable_count = sum(1 for p in st.session_state['pages']
+                              if p.get('status') in ['completed', 'failed', 'COMPLETED', 'FAILED', 'NEEDS_REVIEW'])
+        current_selected = sum(1 for i in range(len(st.session_state['pages']))
+                              if i in st.session_state['selected_pages'])
+
+        # Toggle button label based on state
+        if current_selected == selectable_count and selectable_count > 0:
+            button_label = f"☐ Deselect All ({selectable_count})"
+            select_action = "deselect"
+        else:
+            button_label = f"☑️ Select Page ({selectable_count})"
+            select_action = "select"
+
+        if st.button(button_label, key="select_all_page"):
+            if select_action == "select":
+                for i in range(len(st.session_state['pages'])):
+                    page = st.session_state['pages'][i]
+                    if page.get('status') in ['completed', 'failed', 'COMPLETED', 'FAILED', 'NEEDS_REVIEW']:
+                        st.session_state['selected_pages'].add(i)
+            else:
+                # Deselect all on current page
+                for i in range(len(st.session_state['pages'])):
+                    st.session_state['selected_pages'].discard(i)
             st.rerun()
 
     with col2:
@@ -1113,21 +1131,19 @@ def render_page_list():
         # Add checkbox for selection (allow selecting completed/failed pages for reprocessing)
         col_check, col_thumb, col_expander = st.columns([0.05, 0.15, 0.8])
         with col_check:
-            if page_status in ['completed', 'failed', 'COMPLETED', 'FAILED']:
+            if page_status in ['completed', 'failed', 'COMPLETED', 'FAILED', 'NEEDS_REVIEW']:
                 # Ensure selected_pages exists
                 if 'selected_pages' not in st.session_state:
                     st.session_state['selected_pages'] = set()
-                
+
                 is_selected = i in st.session_state['selected_pages']
                 checkbox_val = st.checkbox("Select", value=is_selected, key=f"select_{i}", label_visibility="collapsed")
-                
+
                 # Update selection set based on checkbox value
                 if checkbox_val and i not in st.session_state['selected_pages']:
                     st.session_state['selected_pages'].add(i)
-                    st.rerun()  # Force update to show new count
                 elif not checkbox_val and i in st.session_state['selected_pages']:
                     st.session_state['selected_pages'].discard(i)
-                    st.rerun()  # Force update to show new count
         
         with col_thumb:
             # Show mini thumbnail in list

@@ -330,7 +330,13 @@ def process_page_task(self, page_id: int, project_id: int):
         raise
 
 
-@celery_app.task(bind=True, base=DBTask, name='app.tasks.translation.process_batch_task')
+@celery_app.task(
+    bind=True,
+    base=DBTask,
+    name='app.tasks.translation.process_batch_task',
+    time_limit=21600,  # 6 hours for batch processing
+    soft_time_limit=21000  # 5 hours 50 minutes soft limit
+)
 def process_batch_task(self, project_id: int, page_ids: list):
     """
     Process multiple pages in sequence.

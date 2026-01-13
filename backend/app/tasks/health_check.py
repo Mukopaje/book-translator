@@ -3,7 +3,7 @@ Health Check Tasks
 Automatically detect and recover stuck pages to prevent system lockups.
 """
 from celery import shared_task
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.database import SessionLocal
 from app.models.db_models import Page, PageStatus
 import logging
@@ -25,7 +25,8 @@ def recover_stuck_pages():
     db = SessionLocal()
 
     try:
-        now = datetime.utcnow()
+        # Use timezone-aware datetime to match database timestamps
+        now = datetime.now(timezone.utc)
 
         # Define timeout thresholds
         processing_timeout = now - timedelta(minutes=30)
@@ -104,7 +105,7 @@ def cleanup_old_errors():
 
     try:
         # Clear error messages from FAILED pages older than 7 days
-        old_threshold = datetime.utcnow() - timedelta(days=7)
+        old_threshold = datetime.now(timezone.utc) - timedelta(days=7)
 
         old_failed = db.query(Page).filter(
             Page.status == PageStatus.FAILED,

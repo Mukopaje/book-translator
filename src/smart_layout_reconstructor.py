@@ -249,12 +249,13 @@ class SmartLayoutReconstructor:
             
             elif rtype == 'table':
                 # TABLE PIPELINE
-                # We mark it as 'table' so reconstruct_pdf knows to look in table_queue
+                # Don't include text boxes - the TableArtifact already has structured data
+                # Including boxes here causes duplicate rendering (table + text)
                 page_sections.append({
                     'type': 'table',
                     'x': rbox['x'], 'y_start': rbox['y'], 'y_end': rbox['y'] + rbox['h'],
                     'w': rbox['w'], 'height': rbox['h'],
-                    'boxes': region_text_map[id(region)]
+                    'boxes': []  # Empty - table artifact has the data
                 })
                 print(f"  [Layout] Added Table at Y={rbox['y']}")
 

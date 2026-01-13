@@ -111,10 +111,14 @@ class LayoutAgent:
             try:
                 result = json.loads(response.text)
 
-                # Extract page number
+                # Extract page number and layout info
                 page_number = result.get("page_number")
+                layout_columns = result.get("layout_columns", 1)
+
                 if page_number:
                     print(f"[LayoutAgent] Detected page number: {page_number}")
+                if layout_columns > 1:
+                    print(f"[LayoutAgent] Detected {layout_columns}-column layout")
 
                 # Convert normalized coordinates (0-1000) to pixel coordinates
                 width, height = img.size
@@ -135,11 +139,24 @@ class LayoutAgent:
                         r["box_pixel"] = pixel_box
                         converted_regions.append(r)
 
-                print(f"[LayoutAgent] Detected {len(converted_regions)} regions.")
-                for r in converted_regions:
-                    print(f"  - {r['type']}: {r['box_pixel']}")
+                # Sort regions by reading order if provided
+                if all('reading_order' in r for r in converted_regions):
+                    converted_regions.sort(key=lambda r: r.get('reading_order', 999))
+                    print(f"[LayoutAgent] Detected {len(converted_regions)} regions (sorted by reading order).")
+                else:
+                    print(f"[LayoutAgent] Detected {len(converted_regions)} regions.")
 
-                return {"success": True, "regions": converted_regions, "page_number": page_number}
+                for r in converted_regions:
+                    column_info = f", col={r.get('column', 1)}" if layout_columns > 1 else ""
+                    order_info = f", order={r.get('reading_order', '?')}" if 'reading_order' in r else ""
+                    print(f"  - {r['type']}{column_info}{order_info}: {r['box_pixel']}")
+
+                return {
+                    "success": True,
+                    "regions": converted_regions,
+                    "page_number": page_number,
+                    "layout_columns": layout_columns
+                }
                 
             except json.JSONDecodeError as e:
                 print(f"[LayoutAgent] Error parsing JSON response: {e}")
