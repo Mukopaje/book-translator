@@ -354,6 +354,50 @@ class SmartLayoutReconstructor:
             else: translations.append("")
         return translations
     
+    def _calculate_text_expansion(self, text_boxes, full_page_japanese):
+        """
+        Calculate the expansion ratio from Japanese to English.
+        Returns a scaling factor to apply to font size and line height.
+        """
+        try:
+            # Count Japanese characters (from OCR)
+            japanese_char_count = 0
+            if full_page_japanese:
+                # Remove whitespace for character count
+                japanese_char_count = len(re.sub(r'\s+', '', full_page_japanese))
+
+            # Count English characters (from translations)
+            english_char_count = 0
+            for box in text_boxes:
+                if box.get('translation'):
+                    english_char_count += len(re.sub(r'\s+', '', box['translation']))
+
+            if japanese_char_count == 0 or english_char_count == 0:
+                return 1.0  # No adjustment if we can't calculate
+
+            # Calculate expansion ratio
+            expansion_ratio = english_char_count / japanese_char_count
+
+            print(f"[PDF Scaling] Japanese: {japanese_char_count} chars, English: {english_char_count} chars")
+            print(f"[PDF Scaling] Expansion ratio: {expansion_ratio:.2f}x")
+
+            # Apply scaling based on expansion
+            # If English is 130% or more of Japanese, start reducing font/spacing
+            if expansion_ratio >= 1.3:
+                # Scale down by up to 20% for very long expansions
+                # expansion_ratio 1.3 → scale 0.95 (5% reduction)
+                # expansion_ratio 1.5 → scale 0.85 (15% reduction)
+                # expansion_ratio 2.0+ → scale 0.80 (20% reduction, max)
+                scale_factor = max(0.80, 1.0 - (expansion_ratio - 1.0) * 0.25)
+                print(f"[PDF Scaling] Applying scale factor: {scale_factor:.2f}")
+                return scale_factor
+
+            return 1.0  # No scaling needed
+
+        except Exception as e:
+            print(f"[PDF Scaling] Error calculating expansion: {e}")
+            return 1.0  # Safe default
+
     def reconstruct_pdf(self, text_boxes, output_path, translator=None, full_page_japanese=None, translated_diagrams=None, translated_charts=None, book_context=None, table_artifacts=None, chart_artifacts=None, render_capture=None, translated_paragraphs=None, layout=None):
         def _is_critical_label(text):
             if not text: return False
@@ -384,16 +428,31 @@ class SmartLayoutReconstructor:
                         break
 
         if not layout: layout = self._analyze_layout_structure(text_boxes)
-        
+
+        # Calculate dynamic scaling based on text expansion
+        content_scale = self._calculate_text_expansion(text_boxes, full_page_japanese)
+
         # Create PDF
         c = canvas.Canvas(output_path, pagesize=A4)
         self.canvas = c
         c.setFillColorRGB(1, 1, 1)
         c.rect(0, 0, self.page_width, self.page_height, fill=1, stroke=0)
         c.setFillColor(black)
-        font_size = 10  # Consistent with class settings
+
+        # Apply dynamic scaling to font size and line height
+        base_font_size = 10
+        font_size = base_font_size * content_scale
         c.setFont(self.font_name, font_size)
-        line_height = font_size * 1.4  # Tighter line height
+
+        # Adjust line height: tighter for longer content
+        base_line_height_multiplier = 1.4
+        if content_scale < 0.95:
+            # If we're scaling down, also tighten line spacing slightly
+            line_height_multiplier = max(1.2, base_line_height_multiplier * 0.9)
+        else:
+            line_height_multiplier = base_line_height_multiplier
+
+        line_height = font_size * line_height_multiplier
         current_y = self.page_height - self.margin_top
         at_page_top = True
         paragraph_index = 0
@@ -403,7 +462,7 @@ class SmartLayoutReconstructor:
         table_queue = list(table_artifacts or [])
         
         def _render_table(table_artifact):
-            nonlocal current_y
+            nonlocal current_y, font_size, line_height
             print(f"Render Table: {table_artifact.id}")
             
             rows = table_artifact.rows
@@ -458,16 +517,16 @@ class SmartLayoutReconstructor:
                 w, h = table.wrapOn(self.canvas, available_width, self.page_height)
                 if current_y - h < self.margin_bottom:
                     self.canvas.showPage()
-                    self.canvas.setFont(self.font_name, self.font_size)
+                    self.canvas.setFont(self.font_name, font_size)
                     current_y = self.page_height - self.margin_top
 
                 table.drawOn(self.canvas, self.margin_left, current_y - h)
-                current_y -= (h + self.line_height)
+                current_y -= (h + line_height)
             except Exception as e:
                 print(f"Table render error: {e}")
 
         def _render_diagram_at(section, c, pdf_width, pdf_height, render_y_top, translated_diagrams, is_chart=False):
-            nonlocal current_y, at_page_top, legend_items
+            nonlocal current_y, at_page_top, legend_items, font_size
             section_y_start = section.get('y_start', 0)
             section_height = section.get('height', 200)
             
