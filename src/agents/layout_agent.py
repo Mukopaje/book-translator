@@ -16,14 +16,14 @@ class LayoutAgent:
     """
     
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
+        self.api_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
-            print("Warning: GOOGLE_API_KEY not found. LayoutAgent will fail if called.")
+            print("Warning: GOOGLE_API_KEY/GEMINI_API_KEY not found. LayoutAgent will fail if called.")
         else:
             genai.configure(api_key=self.api_key)
             
-        # Use the latest Flash model for speed and vision capabilities
-        self.model_name = "gemini-2.0-flash-exp" 
+        # Use the latest Pro model for best layout understanding (text/diagram distinction)
+        self.model_name = "gemini-3-pro-preview"
         
     def _encode_image(self, image_path: str) -> str:
         """Encode image to base64"""

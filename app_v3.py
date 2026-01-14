@@ -784,8 +784,7 @@ def render_page_list():
             for key in keys_to_remove:
                 del st.session_state[key]
 
-            # Clear selected_pages when switching pages to avoid confusion
-            st.session_state['selected_pages'] = set()
+            # Note: We do NOT clear selected_pages here anymore to allow persistence across pages
         except Exception as e:
             logger.warning(f"Failed to load pages from backend: {e}")
             # Handle expired/invalid token with explicit re-auth action
@@ -927,14 +926,17 @@ def render_page_list():
     col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1.5, 1.5])
     with col1:
         # Select/Deselect all on current page
-        selectable_count = sum(1 for p in st.session_state['pages']
-                              if p.get('status') in ['completed', 'failed', 'COMPLETED', 'FAILED', 'NEEDS_REVIEW'])
-        current_selected = sum(1 for i in range(len(st.session_state['pages']))
-                              if i in st.session_state['selected_pages'])
+        selectable_pages = [p for p in st.session_state['pages']
+                           if p.get('status') in ['completed', 'failed', 'COMPLETED', 'FAILED', 'NEEDS_REVIEW']]
+        selectable_count = len(selectable_pages)
+        
+        # Check how many visible pages are currently selected (by ID)
+        current_selected_count = sum(1 for p in st.session_state['pages']
+                                    if p.get('id') in st.session_state['selected_pages'])
 
         # Toggle button label based on state
-        if current_selected == selectable_count and selectable_count > 0:
-            button_label = f"☐ Deselect All ({selectable_count})"
+        if current_selected_count >= selectable_count and selectable_count > 0:
+            button_label = f"☐ Deselect Page ({selectable_count})"
             select_action = "deselect"
         else:
             button_label = f"☑️ Select Page ({selectable_count})"
@@ -942,19 +944,20 @@ def render_page_list():
 
         if st.button(button_label, key="select_all_page"):
             if select_action == "select":
-                for i in range(len(st.session_state['pages'])):
-                    page = st.session_state['pages'][i]
+                for page in st.session_state['pages']:
                     if page.get('status') in ['completed', 'failed', 'COMPLETED', 'FAILED', 'NEEDS_REVIEW']:
-                        st.session_state['selected_pages'].add(i)
+                        page_id = page.get('id')
+                        st.session_state['selected_pages'].add(page_id)
                         # Update checkbox state too
-                        checkbox_key = f"checkbox_{i}"
+                        checkbox_key = f"checkbox_{page_id}"
                         st.session_state[checkbox_key] = True
             else:
                 # Deselect all on current page
-                for i in range(len(st.session_state['pages'])):
-                    st.session_state['selected_pages'].discard(i)
+                for page in st.session_state['pages']:
+                    page_id = page.get('id')
+                    st.session_state['selected_pages'].discard(page_id)
                     # Update checkbox state too
-                    checkbox_key = f"checkbox_{i}"
+                    checkbox_key = f"checkbox_{page_id}"
                     if checkbox_key in st.session_state:
                         st.session_state[checkbox_key] = False
             st.rerun()
@@ -1096,27 +1099,33 @@ def render_page_list():
         if st.button(button_label, key="reprocess_btn"):
             api = get_api_client()
             try:
-                # Get fresh count at click time
-                selected_indices = sorted(list(st.session_state['selected_pages']))
+                # Get fresh set of selected IDs
+                selected_ids = list(st.session_state['selected_pages'])
 
-                if not selected_indices:
+                if not selected_ids:
                     st.warning("⚠️ No pages selected. Please select pages to reprocess.")
                 else:
-                    page_ids = []
-                    for idx in selected_indices:
-                        page = st.session_state['pages'][idx]
-                        pid = page.get('id')
+                    # Filter for backend IDs (integers)
+                    backend_ids = []
+                    for pid in selected_ids:
                         if isinstance(pid, int):
-                            page_ids.append(pid)
+                            backend_ids.append(pid)
+                        else:
+                            # Try to cast string to int if possible (unlikely for UUIDs, but good safety)
+                            try:
+                                backend_ids.append(int(pid))
+                            except:
+                                pass
 
-                    if page_ids:
-                        # Mark pages as queued for reprocessing
-                        for idx in selected_indices:
-                            st.session_state['pages'][idx]['status'] = 'queued'
-                            st.session_state['pages'][idx]['reprocessing'] = True
+                    if backend_ids:
+                        # Mark visible pages as queued for reprocessing to give immediate feedback
+                        for page in st.session_state['pages']:
+                            if page.get('id') in backend_ids:
+                                page['status'] = 'queued'
+                                page['reprocessing'] = True
 
-                        result = api.queue_batch_processing(page_ids)
-                        st.success(f"✅ Reprocessing {len(page_ids)} page(s)!")
+                        result = api.queue_batch_processing(backend_ids)
+                        st.success(f"✅ Reprocessing {len(backend_ids)} page(s)!")
 
                         # Clear selections and checkbox states
                         st.session_state['selected_pages'] = set()
@@ -1128,7 +1137,7 @@ def render_page_list():
                         st.session_state.pages_loaded_from_backend = False
                         st.rerun()
                     else:
-                        st.warning("Selected pages don't have backend IDs")
+                        st.warning("Selected pages don't have valid backend IDs (integers). Are they uploaded?")
             except Exception as e:
                 st.error(f"Failed to reprocess: {e}")
 
@@ -1164,19 +1173,22 @@ def render_page_list():
                 if 'selected_pages' not in st.session_state:
                     st.session_state['selected_pages'] = set()
 
-                # Create a unique key for this page's checkbox state
-                checkbox_key = f"checkbox_{i}"
+                # Create a unique key for this page's checkbox state using ID instead of index
+                page_id = page.get('id')
+                checkbox_key = f"checkbox_{page_id}"
 
                 # Initialize checkbox state if not exists
                 if checkbox_key not in st.session_state:
-                    st.session_state[checkbox_key] = i in st.session_state['selected_pages']
+                    st.session_state[checkbox_key] = page_id in st.session_state['selected_pages']
 
                 # Render checkbox with callback
-                def on_checkbox_change():
-                    if st.session_state[checkbox_key]:
-                        st.session_state['selected_pages'].add(i)
+                # IMPORTANT: Use default arguments to capture loop variables (page_id, checkbox_key) by value
+                # This fixes the bug where all checkboxes controlled the last page
+                def on_checkbox_change(pid=page_id, k=checkbox_key):
+                    if st.session_state[k]:
+                        st.session_state['selected_pages'].add(pid)
                     else:
-                        st.session_state['selected_pages'].discard(i)
+                        st.session_state['selected_pages'].discard(pid)
 
                 # Don't set 'value' parameter - let session state control it via 'key'
                 st.checkbox(

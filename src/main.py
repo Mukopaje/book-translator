@@ -59,7 +59,7 @@ class BookTranslator:
         # Try Gemini first, fall back to Google Translate
         try:
             self.translator = GeminiTranslator()
-            print("[OK] Using Gemini 2.5 Flash for intelligent translation")
+            print("[OK] Using Gemini 3 Pro Preview for intelligent translation")
         except Exception as e:
             print(f"[INFO] Gemini not available ({e}), using Google Translate")
             self.translator = TextTranslator()
@@ -217,6 +217,7 @@ class BookTranslator:
                 
                 def run_table_detection():
                     table_agent = TableAgent()
+                    chart_agent = ChartAgent()
                     
                     # 1. AI-Based Extraction (Preferred)
                     # Extract table regions from the layout analysis

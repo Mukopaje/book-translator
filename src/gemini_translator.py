@@ -15,7 +15,7 @@ class GeminiTranslator:
     Provides context-aware translation with proper formatting
     """
     
-    def __init__(self, model_name="gemini-2.0-flash"):
+    def __init__(self, model_name="gemini-3-pro-preview"):
         """Initialize Gemini translator"""
         # Load environment variables
         project_root = Path(__file__).parent.parent.resolve()
