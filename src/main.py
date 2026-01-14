@@ -273,9 +273,14 @@ class BookTranslator:
 
             # Step 4b: Translate diagrams if found
             translated_diagrams = None
-            if diagram_regions:
+            # Check if overlay mode is enabled
+            diagram_mode = os.getenv('DIAGRAM_TRANSLATION_MODE', 'overlay')
+
+            if diagram_regions and diagram_mode != 'overlay':
+                # Only use old diagram translator if NOT in overlay mode
+                # Overlay mode handles translation during PDF reconstruction
                 if verbose:
-                    print(f"\n[4b/6] Translating diagram labels...")
+                    print(f"\n[4b/6] Translating diagram labels (replace mode)...")
                 # Use enhanced processing mode for crisp diagrams
                 diagram_translator = DiagramTranslator(processing_mode="enhanced")
                 diagram_output_dir = f"{self.output_dir}/diagrams"
@@ -288,6 +293,20 @@ class BookTranslator:
                 )
                 if verbose:
                     print(f"  + Translated {len(translated_diagrams)} diagram(s)")
+            elif diagram_regions and diagram_mode == 'overlay':
+                if verbose:
+                    print(f"\n[4b/6] Extracting diagram text for overlay mode...")
+                # For overlay mode, we need to extract text and translate it efficiently
+                # But we DON'T use the old character-by-character approach
+                translated_diagrams = self._extract_diagrams_for_overlay(
+                    diagram_regions,
+                    self.translator,
+                    book_context=self.book_context,
+                    source_lang=actual_source_lang,
+                    target_lang=self.target_language
+                )
+                if verbose:
+                    print(f"  + Extracted and translated {len(translated_diagrams)} diagram(s) for overlay mode")
 
             # Step 4c: Translate charts if found (Dedicated Pipeline)
             translated_charts = None
@@ -462,6 +481,158 @@ class BookTranslator:
                 traceback.print_exc()
 
         return results
+
+    def _extract_diagrams_for_overlay(self, diagram_regions, translator=None, book_context=None, source_lang='auto', target_lang='en'):
+        """
+        Extract text from diagrams and translate for overlay mode.
+        Uses Gemini Vision to extract ALL text at once (not character-by-character).
+        Language-agnostic: works with any source language detected by the system.
+        Returns data in the same format as DiagramTranslator for compatibility.
+        """
+        from google import genai
+        from PIL import Image
+        import json
+
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            print("[WARNING] No API key found for diagram extraction")
+            return []
+
+        client = genai.Client(api_key=api_key)
+        model_name = os.getenv("DIAGRAM_MODEL", "gemini-2.5-flash")
+
+        translated_diagrams = []
+        img = Image.open(self.image_path)
+
+        for i, region in enumerate(diagram_regions):
+            try:
+                # Crop diagram region
+                x = region['x']
+                y = region['y']
+                w = region['w']
+                h = region['h']
+                crop = img.crop((x, y, x + w, y + h))
+
+                # Language names for better prompting
+                lang_map = {
+                    'ja': 'Japanese', 'es': 'Spanish', 'pt': 'Portuguese', 'fr': 'French',
+                    'de': 'German', 'it': 'Italian', 'zh': 'Chinese', 'ko': 'Korean',
+                    'ru': 'Russian', 'ar': 'Arabic', 'auto': 'the source language'
+                }
+                target_map = {
+                    'en': 'English', 'es': 'Spanish', 'pt': 'Portuguese', 'fr': 'French',
+                    'de': 'German', 'ja': 'Japanese', 'zh': 'Chinese'
+                }
+                source_name = lang_map.get(source_lang, source_lang.upper())
+                target_name = target_map.get(target_lang, target_lang.upper())
+
+                # Use Gemini to extract ALL text with positions
+                prompt = f"""
+                You are analyzing a technical diagram that contains MULTIPLE sub-diagrams or components.
+
+                CRITICAL: This image likely has text labels on BOTH the LEFT and RIGHT sides.
+                You MUST extract text from ALL areas of the image.
+
+                STEP-BY-STEP INSTRUCTIONS:
+                1. First, scan the LEFT half of the image (x=0 to x=width/2)
+                   - Extract ALL text labels you find
+                   - Include small text, large text, text in any orientation
+
+                2. Then, scan the RIGHT half of the image (x=width/2 to x=width)
+                   - Extract ALL text labels you find
+                   - DO NOT skip this step - the right side is CRITICAL
+
+                3. For EACH piece of text found:
+                   - Record the exact original text (in {source_name})
+                   - Translate to {target_name} (use technical/automotive terminology)
+                   - Provide precise bounding box [x, y, width, height] in PIXELS relative to this image
+                   - IMPORTANT: x,y is top-left corner, not center!
+
+                COMMON MISTAKES TO AVOID:
+                - Missing text on the right side (SCAN THE ENTIRE IMAGE!)
+                - Skipping small or faint text (include ALL text)
+                - Stopping after finding 10-15 labels (there may be 20-30+)
+
+                Return JSON format:
+                {{
+                    "labels": [
+                        {{
+                            "original": "original text",
+                            "translation": "translated text",
+                            "bbox": [x, y, w, h]
+                        }}
+                    ]
+                }}
+
+                Context: {book_context or 'Technical manual'}
+
+                Remember: Extract from LEFT side AND RIGHT side!
+                """
+
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[prompt, crop],
+                    config={"response_mime_type": "application/json"}
+                )
+
+                data = json.loads(response.text)
+                labels = data.get("labels", [])
+
+                # DEBUG: Check what we received
+                print(f"  [Overlay] DEBUG: Crop size: {crop.width}x{crop.height}")
+                if labels:
+                    print(f"  [Overlay] DEBUG: First label: {labels[0]}")
+
+                # Convert to DiagramTranslator format for compatibility
+                annotations = []
+                crop_width, crop_height = crop.size
+
+                for label in labels:
+                    bbox = label.get("bbox", [0, 0, 50, 20])
+
+                    # CRITICAL: Check if bbox values are normalized (0-1) or pixels
+                    # If max value < 10, assume normalized; convert to pixels
+                    max_val = max(bbox) if bbox else 0
+                    if max_val > 0 and max_val <= 1.0:
+                        # Normalized coordinates - convert to pixels
+                        print(f"  [Overlay] DEBUG: Converting normalized bbox {bbox} to pixels")
+                        bbox = [
+                            int(bbox[0] * crop_width),
+                            int(bbox[1] * crop_height),
+                            int(bbox[2] * crop_width),
+                            int(bbox[3] * crop_height)
+                        ]
+
+                    annotations.append({
+                        'x': bbox[0],
+                        'y': bbox[1],
+                        'w': bbox[2],
+                        'h': bbox[3],
+                        'text': label.get("translation", ""),  # Translated text (target language)
+                        'original_text': label.get("original", "")  # Original text (source language)
+                    })
+
+                # Store in same format as DiagramTranslator
+                translated_diagrams.append({
+                    'image': crop,  # Original diagram image
+                    'annotations': annotations,
+                    'region': region,
+                    'y_center': region['y'] + region['h'] // 2
+                })
+
+                print(f"  [Overlay] Extracted {len(annotations)} labels from diagram {i+1}")
+
+            except Exception as e:
+                print(f"  [Overlay] Error extracting diagram {i+1}: {e}")
+                # Still add entry with empty annotations so structure is consistent
+                translated_diagrams.append({
+                    'image': crop,
+                    'annotations': [],
+                    'region': region,
+                    'y_center': region['y'] + region['h'] // 2
+                })
+
+        return translated_diagrams
 
 
 def main():

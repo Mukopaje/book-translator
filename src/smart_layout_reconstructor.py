@@ -585,8 +585,8 @@ class SmartLayoutReconstructor:
                     # Convert annotation to overlay format
                     text_boxes_for_overlay.append({
                         'bbox': (anno['x'], anno['y'], anno['w'], anno['h']),
-                        'japanese': anno.get('original_text', '???'),  # Original Japanese
-                        'english': anno['text'],  # English translation
+                        'original': anno.get('original_text', '???'),  # Original text (source language)
+                        'translation': anno['text'],  # Translated text (target language)
                         'orientation': 'horizontal',  # Default, could be detected
                         'font_size': anno['h'] * 0.7  # Estimate font size
                     })

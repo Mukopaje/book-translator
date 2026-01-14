@@ -19,10 +19,10 @@ class DiagramOverlayRenderer:
     def __init__(self):
         """Initialize renderer with default styling."""
         # Font settings
-        self.label_font_name = "Helvetica"
-        self.label_size_ratio = 1.2  # 120% of original text size
-        self.min_font_size = 32  # Large minimum (will be scaled down in PDF)
-        self.max_font_size = 48  # Large maximum (will be scaled down in PDF)
+        self.label_font_name = "Helvetica-Bold"  # Bold for better visibility
+        self.label_size_ratio = 2.0  # 200% of original text size
+        self.min_font_size = 96  # HUGE minimum to survive 70-80% PDF downscaling
+        self.max_font_size = 120  # HUGE maximum
 
         # Overlay styling
         self.bg_color = (255, 255, 255)  # Pure white
@@ -53,8 +53,8 @@ class DiagramOverlayRenderer:
             original_image_path: Path to original diagram image (can be None if original_image provided)
             text_boxes: List of dictionaries with:
                 - 'bbox': (x, y, w, h) in pixels
-                - 'japanese': '日本語' (original text)
-                - 'english': 'English' (translation)
+                - 'original': original text in source language
+                - 'translation': translated text in target language
                 - 'orientation': 'horizontal' | 'vertical' (optional)
                 - 'font_size': float (optional, detected font size)
             output_path: Where to save the bilingual diagram
@@ -84,17 +84,17 @@ class DiagramOverlayRenderer:
             (width, height), text_boxes
         )
 
-        # Render each English label
+        # Render each translated label
         for i, (text_box, position) in enumerate(zip(text_boxes, overlay_positions)):
-            if text_box.get('english'):
+            if text_box.get('translation'):
                 self._render_overlay_label(
                     draw,
-                    text_box['english'],
+                    text_box['translation'],
                     position,
                     text_box.get('orientation', 'horizontal')
                 )
                 # print(f"  [BilingualOverlay] Label {i+1}/{len(text_boxes)}: "
-                #       f"'{text_box['japanese'][:20]}...' -> '{text_box['english'][:20]}...'")
+                #       f"'{text_box['original'][:20]}...' -> '{text_box['translation'][:20]}...'")
 
         # Composite overlay onto original image
         result = Image.alpha_composite(img, overlay)
@@ -125,24 +125,28 @@ class DiagramOverlayRenderer:
         occupied_regions = []  # Track where labels are already placed
 
         for box in text_boxes:
-            if not box.get('english'):
+            if not box.get('translation'):
                 positions.append(None)
                 continue
 
             x, y, w, h = box['bbox']
             orientation = box.get('orientation', 'horizontal')
-            english_text = box['english']
+            translated_text = box['translation']
 
-            # Determine font size - CRITICAL: Must be LARGE because image gets scaled down in PDF
-            # Diagrams are typically scaled down 2-3x when placed in PDF
-            # So we need to render at 2-3x the final desired size
-            # Target: 12pt readable in PDF = need 24-36px in source image
-            base_font_size = 32  # Large base to survive scaling
+            # Determine font size - CRITICAL: Must be HUGE because diagrams get scaled down 70-80% in PDF!
+            # Reality check: 1345px diagram → ~450pt PDF = 65% reduction
+            # So we need to render at 3-5x the final desired size
+            # Target: 14pt readable in PDF = need 70-96px in source image
+            base_font_size = 96  # HUGE base to survive 70-80% scaling
             original_font_size = box.get('font_size', base_font_size)
             label_font_size = max(
-                base_font_size,  # Always at least 32px before scaling
-                min(48, original_font_size * self.label_size_ratio)  # Max 48px
+                base_font_size,  # Always at least 96px before scaling
+                min(120, original_font_size * self.label_size_ratio)  # Max 120px
             )
+
+            # DEBUG: Log font size
+            if len(positions) < 3:  # Only log first few to avoid spam
+                print(f"  [Overlay] DEBUG: Label font size = {label_font_size}px for text '{translated_text[:20]}'")
 
             # Calculate English text dimensions
             try:
@@ -153,7 +157,7 @@ class DiagramOverlayRenderer:
             # Get text bounding box
             temp_img = Image.new('RGBA', (1, 1))
             temp_draw = ImageDraw.Draw(temp_img)
-            bbox = temp_draw.textbbox((0, 0), english_text, font=font)
+            bbox = temp_draw.textbbox((0, 0), translated_text, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
 
