@@ -574,9 +574,10 @@ class SmartLayoutReconstructor:
                 diagram_image = original_crop
 
             # OVERLAY MODE: Create bilingual diagram if enabled
+            print(f"[DEBUG] diagram_mode={self.diagram_mode}, has_annotations={bool(diagram_annotations)}, has_crop={bool(original_crop)}")
             if self.diagram_mode == 'overlay' and diagram_annotations and original_crop:
-                # print(f"[DiagramOverlay] Creating bilingual diagram for {'chart' if is_chart else 'diagram'} "
-                #       f"with {len(diagram_annotations)} labels")
+                print(f"[DiagramOverlay] Creating bilingual diagram for {'chart' if is_chart else 'diagram'} "
+                      f"with {len(diagram_annotations)} labels")
 
                 # Prepare text boxes for overlay renderer
                 text_boxes_for_overlay = []
