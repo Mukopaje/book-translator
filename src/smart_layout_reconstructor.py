@@ -575,8 +575,8 @@ class SmartLayoutReconstructor:
 
             # OVERLAY MODE: Create bilingual diagram if enabled
             if self.diagram_mode == 'overlay' and diagram_annotations and original_crop:
-                print(f"[DiagramOverlay] Creating bilingual diagram for {'chart' if is_chart else 'diagram'} "
-                      f"with {len(diagram_annotations)} labels")
+                # print(f"[DiagramOverlay] Creating bilingual diagram for {'chart' if is_chart else 'diagram'} "
+                #       f"with {len(diagram_annotations)} labels")
 
                 # Prepare text boxes for overlay renderer
                 text_boxes_for_overlay = []
@@ -587,7 +587,7 @@ class SmartLayoutReconstructor:
                         'japanese': anno.get('original_text', '???'),  # Original Japanese
                         'english': anno['text'],  # English translation
                         'orientation': 'horizontal',  # Default, could be detected
-                        'font_size': anno['h'] * 0.7  # Estimate font size
+                        'font_size': anno['h'] * 0.85  # Increased font size estimate
                     })
 
                 # Create bilingual overlay diagram
@@ -630,20 +630,22 @@ class SmartLayoutReconstructor:
             c.drawImage(img_reader, diagram_x, diagram_y, width=diagram_width_pdf, height=diagram_height_pdf, preserveAspectRatio=True, mask='auto')
             
             # Annotations
-            for note in diagram_annotations:
-                pdf_x = diagram_x + (note['x'] * scale)
-                pdf_y = diagram_y + (diagram_image.height - note['y'] - note['h']/2) * scale
-                text = note['text']
-                
-                # FONT SCALING (Different for Charts)
-                if is_chart:
-                    # Smaller font for charts
-                    font_sz = max(4, min(int(note['h'] * 0.7 * scale), 10))
-                else:
-                    font_sz = max(6, min(int(note['h'] * 0.6 * scale), 10))
-                
-                c.setFont(self.font_name, font_sz)
-                c.drawString(pdf_x, pdf_y, text)
+            # Only draw annotations if NOT in overlay mode (since overlay mode already has them in the image)
+            if self.diagram_mode != 'overlay':
+                for note in diagram_annotations:
+                    pdf_x = diagram_x + (note['x'] * scale)
+                    pdf_y = diagram_y + (diagram_image.height - note['y'] - note['h']/2) * scale
+                    text = note['text']
+                    
+                    # FONT SCALING (Different for Charts)
+                    if is_chart:
+                        # Smaller font for charts
+                        font_sz = max(4, min(int(note['h'] * 0.7 * scale), 10))
+                    else:
+                        font_sz = max(6, min(int(note['h'] * 0.6 * scale), 10))
+                    
+                    c.setFont(self.font_name, font_sz)
+                    c.drawString(pdf_x, pdf_y, text)
 
             current_y = diagram_y - 20
             at_page_top = False

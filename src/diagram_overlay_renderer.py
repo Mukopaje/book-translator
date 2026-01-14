@@ -20,9 +20,9 @@ class DiagramOverlayRenderer:
         """Initialize renderer with default styling."""
         # Font settings
         self.label_font_name = "Helvetica"
-        self.label_size_ratio = 0.95  # 95% of original text size (was 70%)
-        self.min_font_size = 12  # Increased minimum font size
-        self.max_font_size = 22  # Increased maximum font size
+        self.label_size_ratio = 1.0  # 100% of original text size
+        self.min_font_size = 14  # Increased minimum font size for better readability
+        self.max_font_size = 24  # Increased maximum font size
 
         # Overlay styling
         self.bg_color = (255, 255, 255)  # White
@@ -63,8 +63,8 @@ class DiagramOverlayRenderer:
         Returns:
             Path to rendered bilingual diagram
         """
-        print(f"[BilingualOverlay] Creating bilingual diagram: {output_path}")
-        print(f"[BilingualOverlay] Processing {len(text_boxes)} text elements")
+        # print(f"[BilingualOverlay] Creating bilingual diagram: {output_path}")
+        # print(f"[BilingualOverlay] Processing {len(text_boxes)} text elements")
 
         # Load original image (RGBA mode for transparency support)
         if original_image is not None:
@@ -103,8 +103,9 @@ class DiagramOverlayRenderer:
         result_rgb = result.convert('RGB')
         result_rgb.save(output_path, quality=95)
 
-    # print(f"[BilingualOverlay] Saved bilingual diagram: {output_path}")
-    return output_path
+
+        # print(f"[BilingualOverlay] Saved bilingual diagram: {output_path}")
+        return output_path
 
     def _calculate_overlay_positions(
         self,
