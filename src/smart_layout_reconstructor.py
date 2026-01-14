@@ -233,7 +233,7 @@ class SmartLayoutReconstructor:
                     'w': x_end - x_start, 'height': y_end - y_start,
                     'boxes': region_text_map[id(region)]
                 })
-                print(f"  [Layout] Added Technical Diagram at Y={y_start}")
+                # print(f"  [Layout] Added Technical Diagram at Y={y_start}")
 
             elif rtype == 'chart':
                 # CHART PIPELINE
@@ -248,7 +248,7 @@ class SmartLayoutReconstructor:
                     'w': x_end - x_start, 'height': y_end - y_start,
                     'boxes': region_text_map[id(region)]
                 })
-                print(f"  [Layout] Added Chart at Y={y_start} with extra padding")
+                # print(f"  [Layout] Added Chart at Y={y_start} with extra padding")
 
             elif rtype in ['text_block', 'caption', 'header_footer']:
                 # TEXT PIPELINE

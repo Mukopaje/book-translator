@@ -20,20 +20,20 @@ class DiagramOverlayRenderer:
         """Initialize renderer with default styling."""
         # Font settings
         self.label_font_name = "Helvetica"
-        self.label_size_ratio = 0.70  # 70% of original text size
-        self.min_font_size = 8
-        self.max_font_size = 14
+        self.label_size_ratio = 0.95  # 95% of original text size (was 70%)
+        self.min_font_size = 12  # Increased minimum font size
+        self.max_font_size = 22  # Increased maximum font size
 
         # Overlay styling
         self.bg_color = (255, 255, 255)  # White
-        self.bg_opacity = 0.90  # 90% opacity for readability
+        self.bg_opacity = 0.97  # 97% opacity for maximum clarity
         self.text_color = (30, 30, 30)  # Dark gray
         self.border_color = (180, 180, 180)  # Light gray border
         self.border_width = 1
 
         # Spacing and padding
-        self.padding_x = 4
-        self.padding_y = 2
+        self.padding_x = 6  # More padding for clarity
+        self.padding_y = 4
         self.gap_from_original = 3  # Gap between Japanese and English
 
         # Collision detection
@@ -93,8 +93,8 @@ class DiagramOverlayRenderer:
                     position,
                     text_box.get('orientation', 'horizontal')
                 )
-                print(f"  [BilingualOverlay] Label {i+1}/{len(text_boxes)}: "
-                      f"'{text_box['japanese'][:20]}...' -> '{text_box['english'][:20]}...'")
+                # print(f"  [BilingualOverlay] Label {i+1}/{len(text_boxes)}: "
+                #       f"'{text_box['japanese'][:20]}...' -> '{text_box['english'][:20]}...'")
 
         # Composite overlay onto original image
         result = Image.alpha_composite(img, overlay)
@@ -103,8 +103,8 @@ class DiagramOverlayRenderer:
         result_rgb = result.convert('RGB')
         result_rgb.save(output_path, quality=95)
 
-        print(f"[BilingualOverlay] Saved bilingual diagram: {output_path}")
-        return output_path
+    # print(f"[BilingualOverlay] Saved bilingual diagram: {output_path}")
+    return output_path
 
     def _calculate_overlay_positions(
         self,
