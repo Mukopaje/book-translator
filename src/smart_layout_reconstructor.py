@@ -18,6 +18,7 @@ from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY
 import os
 import re
 import html
+from diagram_overlay_renderer import DiagramOverlayRenderer
 
 
 class SmartLayoutReconstructor:
@@ -33,7 +34,15 @@ class SmartLayoutReconstructor:
         self.image_path = image_path
         self.image = Image.open(image_path)
         self.width, self.height = self.image.size
-        
+
+        # Configuration: Diagram rendering mode
+        # 'overlay' = Bilingual labels (Google Translate style)
+        # 'replace' = Replace Japanese with English (current method)
+        self.diagram_mode = os.getenv('DIAGRAM_TRANSLATION_MODE', 'overlay')
+
+        # Initialize diagram overlay renderer
+        self.overlay_renderer = DiagramOverlayRenderer()
+
         # Setup font
         try:
             font_path = "C:/Windows/Fonts/arial.ttf"
@@ -529,13 +538,14 @@ class SmartLayoutReconstructor:
             nonlocal current_y, at_page_top, legend_items, font_size
             section_y_start = section.get('y_start', 0)
             section_height = section.get('height', 200)
-            
+
             # Find match
             diagram_image = None
             diagram_annotations = []
-            
+            original_crop = None  # For overlay mode
+
             source_list = translated_charts if is_chart else translated_diagrams
-            
+
             if source_list:
                 best_match = None
                 best_overlap = 0
@@ -547,14 +557,54 @@ class SmartLayoutReconstructor:
                     if overlap_h > 0:
                         best_match = trans_diag
                         break # First match
-                
+
                 if best_match:
+                    # Store both the translated image and original crop
                     diagram_image = best_match['image']
                     diagram_annotations = best_match.get('annotations', [])
+                    # Get original crop for overlay mode
+                    region = best_match['region']
+                    original_crop = self.image.crop((region['x'], region['y'],
+                                                     region['x'] + region['w'],
+                                                     region['y'] + region['h']))
             
             if not diagram_image:
                 # Fallback crop
-                diagram_image = self.image.crop((section['x'], section['y_start'], section['x']+section['w'], section['y_end']))
+                original_crop = self.image.crop((section['x'], section['y_start'], section['x']+section['w'], section['y_end']))
+                diagram_image = original_crop
+
+            # OVERLAY MODE: Create bilingual diagram if enabled
+            if self.diagram_mode == 'overlay' and diagram_annotations and original_crop:
+                print(f"[DiagramOverlay] Creating bilingual diagram for {'chart' if is_chart else 'diagram'} "
+                      f"with {len(diagram_annotations)} labels")
+
+                # Prepare text boxes for overlay renderer
+                text_boxes_for_overlay = []
+                for anno in diagram_annotations:
+                    # Convert annotation to overlay format
+                    text_boxes_for_overlay.append({
+                        'bbox': (anno['x'], anno['y'], anno['w'], anno['h']),
+                        'japanese': anno.get('original_text', '???'),  # Original Japanese
+                        'english': anno['text'],  # English translation
+                        'orientation': 'horizontal',  # Default, could be detected
+                        'font_size': anno['h'] * 0.7  # Estimate font size
+                    })
+
+                # Create bilingual overlay diagram
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    bilingual_path = tmp.name
+
+                # Render bilingual diagram with original image
+                self.overlay_renderer.render_bilingual_diagram(
+                    original_image_path=None,
+                    text_boxes=text_boxes_for_overlay,
+                    output_path=bilingual_path,
+                    original_image=original_crop  # Pass image directly
+                )
+
+                # Load bilingual diagram instead of translated one
+                diagram_image = Image.open(bilingual_path)
 
             # Scale and Draw - use consistent margins
             diagram_width_pdf = self.page_width - (self.margin_left + self.margin_right)
