@@ -21,8 +21,8 @@ class DiagramOverlayRenderer:
         # Font settings
         self.label_font_name = "Helvetica"
         self.label_size_ratio = 1.2  # 120% of original text size
-        self.min_font_size = 10  # Minimum readable size
-        self.max_font_size = 18  # Maximum to prevent huge labels
+        self.min_font_size = 32  # Large minimum (will be scaled down in PDF)
+        self.max_font_size = 48  # Large maximum (will be scaled down in PDF)
 
         # Overlay styling
         self.bg_color = (255, 255, 255)  # Pure white
@@ -133,14 +133,15 @@ class DiagramOverlayRenderer:
             orientation = box.get('orientation', 'horizontal')
             english_text = box['english']
 
-            # Determine font size - use fixed readable size for diagrams
-            # Ignore annotation box size which is often too small
-            # Use 14px as baseline for good readability
-            base_font_size = 14
+            # Determine font size - CRITICAL: Must be LARGE because image gets scaled down in PDF
+            # Diagrams are typically scaled down 2-3x when placed in PDF
+            # So we need to render at 2-3x the final desired size
+            # Target: 12pt readable in PDF = need 24-36px in source image
+            base_font_size = 32  # Large base to survive scaling
             original_font_size = box.get('font_size', base_font_size)
             label_font_size = max(
-                base_font_size,  # Always at least 14px
-                min(self.max_font_size, original_font_size * self.label_size_ratio)
+                base_font_size,  # Always at least 32px before scaling
+                min(48, original_font_size * self.label_size_ratio)  # Max 48px
             )
 
             # Calculate English text dimensions
