@@ -76,12 +76,15 @@ class LanguageDetector:
         if not self.ai_client:
             # Try to initialize Gemini client
             try:
-                import google.generativeai as genai
+                from google import genai
                 import os
 
-                genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-                self.ai_client = genai.GenerativeModel('gemini-1.5-flash')
-                logger.info("Initialized Gemini client for language detection")
+                api_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
+                # Use 2.0 Flash (fast, efficient for simple language detection)
+                model_name = os.getenv('LANGUAGE_MODEL', 'gemini-2.0-flash')
+                self.ai_client = genai.Client(api_key=api_key)
+                self.model_name = model_name
+                logger.info(f"Initialized Gemini {model_name} for language detection")
             except Exception as e:
                 logger.warning(f"Could not initialize AI client: {e}")
                 self.ai_client = None
@@ -290,7 +293,10 @@ Common languages:
 - vi: Vietnamese
 """
 
-        response = self.ai_client.generate_content(prompt)
+        response = self.ai_client.models.generate_content(
+            model=self.model_name,
+            contents=prompt
+        )
         result = self._parse_json_response(response)
 
         # Add language name

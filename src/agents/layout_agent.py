@@ -6,7 +6,7 @@ import os
 import json
 import base64
 from typing import Dict, List, Any, Optional
-import google.generativeai as genai
+from google import genai
 from PIL import Image
 
 class LayoutAgent:
@@ -19,11 +19,13 @@ class LayoutAgent:
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             print("Warning: GOOGLE_API_KEY/GEMINI_API_KEY not found. LayoutAgent will fail if called.")
+            self.client = None
         else:
-            genai.configure(api_key=self.api_key)
-            
-        # Use the latest Pro model for best layout understanding (text/diagram distinction)
-        self.model_name = "gemini-3-pro-preview"
+            self.client = genai.Client(api_key=self.api_key)
+
+        # Use 2.5 Flash (newest, excellent vision capabilities, fast)
+        # Set LAYOUT_MODEL env var to override
+        self.model_name = os.getenv("LAYOUT_MODEL", "gemini-2.5-flash")
         
     def _encode_image(self, image_path: str) -> str:
         """Encode image to base64"""
@@ -99,13 +101,13 @@ class LayoutAgent:
             
             # Load image
             img = Image.open(image_path)
-            
-            # Call Gemini
-            model = genai.GenerativeModel(self.model_name)
-            response = model.generate_content([
-                prompt,
-                img
-            ], generation_config={"response_mime_type": "application/json"})
+
+            # Call Gemini with new API
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=[prompt, img],
+                config={"response_mime_type": "application/json"}
+            )
             
             # Parse response
             try:

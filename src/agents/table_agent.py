@@ -5,7 +5,8 @@ import numpy as np
 import os
 import base64
 import json
-import google.generativeai as genai
+import concurrent.futures
+from google import genai
 from PIL import Image
 
 from artifacts.schemas import BBox, TableArtifact, TableCell
@@ -15,9 +16,12 @@ class TableAgent:
     def __init__(self) -> None:
         self.api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if self.api_key:
-            genai.configure(api_key=self.api_key)
-        # Use Gemini 3 Pro Preview for best reasoning on dense tables
-        self.model_name = "gemini-3-pro-preview"
+            self.client = genai.Client(api_key=self.api_key)
+        else:
+            self.client = None
+        # Use 2.5 Flash (newest, reliable JSON output, good for complex tables)
+        # Set TABLE_MODEL env var to override
+        self.model_name = os.getenv("TABLE_MODEL", "gemini-2.5-flash")
 
     def extract_tables_with_ai(self, image_path: str, table_regions: List[Dict[str, Any]]) -> List[TableArtifact]:
         """
@@ -51,36 +55,52 @@ class TableAgent:
         if use_full_page:
             return self._extract_from_image(full_image, is_full_page=True, parent_width=width, parent_height=height)
         
-        # 2. Process Regions (Smart Cropping)
-        print(f"[TableAgent] Processing {len(table_regions)} table regions with padded crops...")
-        for i, region in enumerate(table_regions):
-            box = region.get('box_pixel') or self._get_pixel_box(region, width, height)
-            
-            # Add Padding (50px) to ensure borders/headers aren't cut
-            padding = 50
-            x1 = max(0, box['x'] - padding)
-            y1 = max(0, box['y'] - padding)
-            x2 = min(width, box['x'] + box['w'] + padding)
-            y2 = min(height, box['y'] + box['h'] + padding)
-            
-            # Avoid zero-size crops
-            if x2 <= x1 or y2 <= y1:
-                print(f"  [TableAgent] Skipping invalid crop dimensions: {x1},{y1} to {x2},{y2}")
-                continue
+        # 2. Process Regions (Smart Cropping) in Parallel
+        print(f"[TableAgent] Processing {len(table_regions)} table regions with padded crops (Parallel)...")
+        
+        def process_region(idx, region):
+            try:
+                box = region.get('box_pixel') or self._get_pixel_box(region, width, height)
+                
+                # Add Padding (50px) to ensure borders/headers aren't cut
+                padding = 50
+                x1 = max(0, box['x'] - padding)
+                y1 = max(0, box['y'] - padding)
+                x2 = min(width, box['x'] + box['w'] + padding)
+                y2 = min(height, box['y'] + box['h'] + padding)
+                
+                # Avoid zero-size crops
+                if x2 <= x1 or y2 <= y1:
+                    print(f"  [TableAgent] Skipping invalid crop dimensions: {x1},{y1} to {x2},{y2}")
+                    return []
 
-            crop_img = full_image.crop((x1, y1, x2, y2))
-            print(f"  [TableAgent] Region {i+1}: Cropping to ({x1},{y1},{x2},{y2}) ({x2-x1}x{y2-y1})")
+                crop_img = full_image.crop((x1, y1, x2, y2))
+                print(f"  [TableAgent] Region {idx+1}: Cropping to ({x1},{y1},{x2},{y2}) ({x2-x1}x{y2-y1})")
+                
+                # Extract
+                return self._extract_from_image(
+                    crop_img,
+                    is_full_page=False,
+                    offset_x=x1,
+                    offset_y=y1,
+                    parent_width=width,
+                    parent_height=height
+                )
+            except Exception as e:
+                print(f"  [TableAgent] Error processing region {idx+1}: {e}")
+                return []
+
+        # Use ThreadPoolExecutor for parallel processing
+        # Max workers = 5 to avoid rate limits while maximizing speed
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(process_region, i, r) for i, r in enumerate(table_regions)]
             
-            # Extract
-            region_artifacts = self._extract_from_image(
-                crop_img,
-                is_full_page=False,
-                offset_x=x1,
-                offset_y=y1,
-                parent_width=width,
-                parent_height=height
-            )
-            artifacts.extend(region_artifacts)
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    region_artifacts = future.result()
+                    artifacts.extend(region_artifacts)
+                except Exception as e:
+                    print(f"  [TableAgent] Thread exception: {e}")
             
         return artifacts
 
@@ -131,15 +151,22 @@ class TableAgent:
             }
             """
             
-            model = genai.GenerativeModel(self.model_name)
-            response = model.generate_content([prompt, image], generation_config={"response_mime_type": "application/json"})
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=[prompt, image],
+                config={"response_mime_type": "application/json"}
+            )
             
             try:
                 data = json.loads(response.text)
             except json.JSONDecodeError:
                 # Retry once if JSON is malformed
                 print(f"[TableAgent] Malformed JSON, retrying...")
-                response = model.generate_content([prompt, image], generation_config={"response_mime_type": "application/json"})
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt, image],
+                    config={"response_mime_type": "application/json"}
+                )
                 data = json.loads(response.text)
 
             tables = data.get("tables", [])

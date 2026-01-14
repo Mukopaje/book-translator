@@ -6,7 +6,7 @@ Uses Google Gemini 2.5 Flash for intelligent, context-aware translation
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 
 
 class GeminiTranslator:
@@ -15,30 +15,34 @@ class GeminiTranslator:
     Provides context-aware translation with proper formatting
     """
     
-    def __init__(self, model_name="gemini-3-pro-preview"):
+    def __init__(self, model_name=None):
         """Initialize Gemini translator"""
         # Load environment variables
         project_root = Path(__file__).parent.parent.resolve()
         load_dotenv(project_root / '.env')
-        
+
         # Get API key
         api_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
-        
+
         if not api_key:
             raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY not found in environment")
-        
-        # Configure Gemini
-        genai.configure(api_key=api_key)
-        
-        # Initialize model
+
+        # Use 2.5 Flash for FAST translations with good quality
+        # 2.5 Pro is too slow for translating many small text elements
+        # Set TRANSLATION_MODEL env var to override
+        if model_name is None:
+            model_name = os.getenv("TRANSLATION_MODEL", "gemini-2.5-flash")
+
+        # Initialize client
         try:
-            self.model = genai.GenerativeModel(model_name)
+            self.client = genai.Client(api_key=api_key)
+            self.model_name = model_name
             self.available = True
             print(f"[OK] Gemini {model_name} initialized for translation")
         except Exception as e:
             print(f"[ERROR] Failed to initialize Gemini: {e}")
             self.available = False
-            self.model = None
+            self.client = None
     
     def translate_text(self, text: str, context: str = None, source_lang: str = 'ja', target_lang: str = 'en') -> str:
         """
@@ -61,9 +65,12 @@ class GeminiTranslator:
         
         # Build prompt for Gemini
         prompt = self._build_translation_prompt(text, context, source_lang, target_lang)
-        
+
         try:
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             return response.text.strip()
         except Exception as e:
             raise Exception(f"Gemini translation failed: {str(e)}")

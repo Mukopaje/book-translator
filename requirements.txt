@@ -7,4 +7,4 @@ streamlit
 pytesseract
 google-cloud-vision
 google-cloud-translate
-google-generativeai
+google-genai
