@@ -133,10 +133,13 @@ class DiagramOverlayRenderer:
             orientation = box.get('orientation', 'horizontal')
             english_text = box['english']
 
-            # Determine font size based on original text size
-            original_font_size = box.get('font_size', h * 0.7)  # Estimate if not provided
+            # Determine font size - use fixed readable size for diagrams
+            # Ignore annotation box size which is often too small
+            # Use 14px as baseline for good readability
+            base_font_size = 14
+            original_font_size = box.get('font_size', base_font_size)
             label_font_size = max(
-                self.min_font_size,
+                base_font_size,  # Always at least 14px
                 min(self.max_font_size, original_font_size * self.label_size_ratio)
             )
 
