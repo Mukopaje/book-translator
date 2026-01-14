@@ -582,12 +582,14 @@ class SmartLayoutReconstructor:
                 text_boxes_for_overlay = []
                 for anno in diagram_annotations:
                     # Convert annotation to overlay format
+                    # Use much larger font size - aim for at least 18px base for visibility
+                    estimated_font = max(18, anno['h'] * 1.5)
                     text_boxes_for_overlay.append({
                         'bbox': (anno['x'], anno['y'], anno['w'], anno['h']),
                         'japanese': anno.get('original_text', '???'),  # Original Japanese
                         'english': anno['text'],  # English translation
                         'orientation': 'horizontal',  # Default, could be detected
-                        'font_size': anno['h'] * 0.85  # Increased font size estimate
+                        'font_size': estimated_font  # Much larger font for clear visibility
                     })
 
                 # Create bilingual overlay diagram

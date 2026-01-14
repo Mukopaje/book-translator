@@ -25,10 +25,10 @@ class DiagramOverlayRenderer:
         self.max_font_size = 24  # Increased maximum font size
 
         # Overlay styling
-        self.bg_color = (255, 255, 255)  # White
-        self.bg_opacity = 0.97  # 97% opacity for maximum clarity
-        self.text_color = (30, 30, 30)  # Dark gray
-        self.border_color = (180, 180, 180)  # Light gray border
+        self.bg_color = (255, 255, 255)  # Pure white
+        self.bg_opacity = 0.98  # 98% opacity - almost solid for clean background
+        self.text_color = (0, 0, 0)  # Pure black for maximum contrast
+        self.border_color = (100, 100, 100)  # Darker border for definition
         self.border_width = 1
 
         # Spacing and padding
