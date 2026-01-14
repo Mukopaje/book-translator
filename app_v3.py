@@ -770,9 +770,9 @@ def render_page_list():
             total_count = result['total']
 
             logger.info(f"Loaded {len(backend_pages)} pages from backend (total: {total_count}, offset: {offset})")
-            # Log each page status for debugging
+            # Log each page status at DEBUG level to reduce terminal noise
             for p in backend_pages:
-                logger.info(f"  Page {p.get('page_number')}: status={p.get('status')}, id={p.get('id')}")
+                logger.debug(f"  Page {p.get('page_number')}: status={p.get('status')}, id={p.get('id')}")
 
             st.session_state['pages'] = backend_pages
             st.session_state.total_pages_count = total_count
