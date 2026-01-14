@@ -20,9 +20,9 @@ class DiagramOverlayRenderer:
         """Initialize renderer with default styling."""
         # Font settings
         self.label_font_name = "Helvetica"
-        self.label_size_ratio = 1.0  # 100% of original text size
-        self.min_font_size = 14  # Increased minimum font size for better readability
-        self.max_font_size = 24  # Increased maximum font size
+        self.label_size_ratio = 1.2  # 120% of original text size
+        self.min_font_size = 10  # Minimum readable size
+        self.max_font_size = 18  # Maximum to prevent huge labels
 
         # Overlay styling
         self.bg_color = (255, 255, 255)  # Pure white
