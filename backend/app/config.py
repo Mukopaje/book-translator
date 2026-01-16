@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/0"
     
+    # Stripe
+    stripe_api_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_id_pro: str = "price_pro_300"
+    stripe_price_id_scale: str = "price_scale_1000"
+    
+    # Portfolio Examples (GCS Paths) - format: "orig_url|trans_url,orig_url|trans_url"
+    example_screenshots: str = ""
+
     # CORS
     allowed_origins: str = "http://localhost:8501"
     

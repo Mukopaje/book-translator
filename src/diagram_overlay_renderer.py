@@ -14,30 +14,49 @@ class DiagramOverlayRenderer:
     """
     Renders bilingual diagrams with overlay labels.
     Keeps original diagram 100% intact, adds English translations alongside Japanese.
+    Features intelligent collision detection and leader lines for crowded diagrams.
     """
 
     def __init__(self):
         """Initialize renderer with default styling."""
         # Font settings
-        self.label_font_name = "Helvetica-Bold"  # Bold for better visibility
-        self.label_size_ratio = 2.0  # 200% of original text size
-        self.min_font_size = 96  # HUGE minimum to survive 70-80% PDF downscaling
-        self.max_font_size = 120  # HUGE maximum
+        self.label_font_path = self._get_best_font_path()
+        self.label_size_ratio = 1.0  # 100% of original text size - Match original
+        self.min_font_size = 12  # Readable minimum (reduced for crowded diagrams)
+        self.max_font_size = 48  # Reasonable maximum
 
         # Overlay styling
         self.bg_color = (255, 255, 255)  # Pure white
-        self.bg_opacity = 0.98  # 98% opacity - almost solid for clean background
+        self.bg_opacity = 0.98  # More solid for maximum readability
         self.text_color = (0, 0, 0)  # Pure black for maximum contrast
-        self.border_color = (100, 100, 100)  # Darker border for definition
+        self.border_color = (80, 80, 80)  # Darker border for better definition
         self.border_width = 1
 
-        # Spacing and padding
-        self.padding_x = 6  # More padding for clarity
-        self.padding_y = 4
-        self.gap_from_original = 3  # Gap between Japanese and English
+        # Leader line styling
+        self.leader_color = (220, 50, 50)  # Brighter, distinct red for clarity
+        self.leader_width = 2 # Thicker line for better visibility
 
-        # Collision detection
-        self.min_distance = 5  # Minimum distance between labels
+        # Spacing and padding
+        self.padding_x = 4
+        self.padding_y = 2
+        self.gap_from_original = 4  # Gap between Japanese and English
+        self.min_distance = 3  # Minimum distance between labels
+
+    def _get_best_font_path(self):
+        """Find the best available font on the system"""
+        font_candidates = [
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/Library/Fonts/Arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        ]
+        
+        for path in font_candidates:
+            if os.path.exists(path):
+                return path
+        return None
 
     def render_bilingual_diagram(
         self,
@@ -47,64 +66,46 @@ class DiagramOverlayRenderer:
         original_image: Optional[Image.Image] = None
     ) -> str:
         """
-        Create bilingual diagram with overlay labels.
-
-        Args:
-            original_image_path: Path to original diagram image (can be None if original_image provided)
-            text_boxes: List of dictionaries with:
-                - 'bbox': (x, y, w, h) in pixels
-                - 'original': original text in source language
-                - 'translation': translated text in target language
-                - 'orientation': 'horizontal' | 'vertical' (optional)
-                - 'font_size': float (optional, detected font size)
-            output_path: Where to save the bilingual diagram
-            original_image: PIL Image object (alternative to path)
-
-        Returns:
-            Path to rendered bilingual diagram
+        Create bilingual diagram with overlay labels and leader lines.
         """
-        # print(f"[BilingualOverlay] Creating bilingual diagram: {output_path}")
-        # print(f"[BilingualOverlay] Processing {len(text_boxes)} text elements")
-
-        # Load original image (RGBA mode for transparency support)
+        # Load original image
         if original_image is not None:
             img = original_image.convert('RGBA')
         elif original_image_path:
             img = Image.open(original_image_path).convert('RGBA')
         else:
             raise ValueError("Either original_image_path or original_image must be provided")
+        
         width, height = img.size
-
-        # Create transparent overlay layer
         overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
         draw = ImageDraw.Draw(overlay)
 
-        # Calculate optimal positions for all labels
-        overlay_positions = self._calculate_overlay_positions(
-            (width, height), text_boxes
-        )
+        # 1. Calculate optimal positions with collision detection
+        overlay_positions = self._calculate_overlay_positions((width, height), text_boxes)
 
-        # Render each translated label
+        # 2. Render leader lines first (so they go under labels)
+        for i, (box, pos) in enumerate(zip(text_boxes, overlay_positions)):
+            if pos and pos.get('needs_leader'):
+                self._draw_leader_line(draw, box['bbox'], pos)
+
+        # 3. Render each translated label
         for i, (text_box, position) in enumerate(zip(text_boxes, overlay_positions)):
-            if text_box.get('translation'):
+            if text_box.get('translation') and position:
+                is_identical = text_box['original'].strip() == text_box['translation'].strip()
                 self._render_overlay_label(
                     draw,
                     text_box['translation'],
-                    position,
-                    text_box.get('orientation', 'horizontal')
+                    position
                 )
-                # print(f"  [BilingualOverlay] Label {i+1}/{len(text_boxes)}: "
-                #       f"'{text_box['original'][:20]}...' -> '{text_box['translation'][:20]}...'")
+                
+                # if i < 5:
+                #     status_msg = " [SAME]" if is_identical else ""
+                #     print(f"  [BilingualOverlay] Label {i+1}/{len(text_boxes)}{status_msg}: "
+                #           f"'{text_box['original'][:15]}' -> '{text_box['translation'][:15]}'")
 
-        # Composite overlay onto original image
+        # Composite and save
         result = Image.alpha_composite(img, overlay)
-
-        # Convert back to RGB for saving
-        result_rgb = result.convert('RGB')
-        result_rgb.save(output_path, quality=95)
-
-
-        # print(f"[BilingualOverlay] Saved bilingual diagram: {output_path}")
+        result.convert('RGB').save(output_path, quality=95)
         return output_path
 
     def _calculate_overlay_positions(
@@ -113,16 +114,15 @@ class DiagramOverlayRenderer:
         text_boxes: List[Dict]
     ) -> List[Dict]:
         """
-        Calculate optimal positions for overlay labels with collision detection.
-
-        Returns list of position dictionaries with:
-            - 'x', 'y': Top-left corner coordinates
-            - 'width', 'height': Label dimensions
-            - 'font_size': Calculated font size
+        Calculate positions using a greedy collision avoidance algorithm.
         """
         width, height = image_size
         positions = []
-        occupied_regions = []  # Track where labels are already placed
+        # Include original text boxes in occupied regions to avoid covering them if possible
+        occupied_regions = []
+        for box in text_boxes:
+             x, y, w, h = box['bbox']
+             occupied_regions.append({'x': x, 'y': y, 'width': w, 'height': h})
 
         for box in text_boxes:
             if not box.get('translation'):
@@ -130,102 +130,71 @@ class DiagramOverlayRenderer:
                 continue
 
             x, y, w, h = box['bbox']
-            orientation = box.get('orientation', 'horizontal')
             translated_text = box['translation']
+            
+            # 1. Determine base font size
+            target_size = max(self.min_font_size, min(self.max_font_size, height * 0.018))
+            original_fs = box.get('font_size', 0)
+            if original_fs > 0:
+                target_size = max(target_size, original_fs * 0.9)
+            
+            # 2. Try to fit the label, shrinking if necessary
+            best_pos = None
+            for current_fs in [target_size, target_size * 0.8, target_size * 0.6]:
+                current_fs = max(self.min_font_size, current_fs)
+                
+                font = self._get_font(int(current_fs))
+                temp_draw = ImageDraw.Draw(Image.new('RGBA', (1, 1)))
+                bbox = temp_draw.textbbox((0, 0), translated_text, font=font)
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                lw, lh = tw + 2 * self.padding_x, th + 2 * self.padding_y
 
-            # Determine font size - CRITICAL: Must be HUGE because diagrams get scaled down 70-80% in PDF!
-            # Reality check: 1345px diagram → ~450pt PDF = 65% reduction
-            # So we need to render at 3-5x the final desired size
-            # Target: 14pt readable in PDF = need 70-96px in source image
-            base_font_size = 96  # HUGE base to survive 70-80% scaling
-            original_font_size = box.get('font_size', base_font_size)
-            label_font_size = max(
-                base_font_size,  # Always at least 96px before scaling
-                min(120, original_font_size * self.label_size_ratio)  # Max 120px
-            )
+                # Candidate spots: Below, Above, Right, Left, then Farther out
+                candidates = [
+                    # Near spots (prefer no leader)
+                    {'x': x, 'y': y + h + self.gap_from_original, 'leader': False},
+                    {'x': x, 'y': y - lh - self.gap_from_original, 'leader': False},
+                    {'x': x + w + self.gap_from_original, 'y': y, 'leader': False},
+                    {'x': x - lw - self.gap_from_original, 'y': y, 'leader': False},
+                    # Far spots (require leader lines)
+                    {'x': x + w + 40, 'y': y + 20, 'leader': True},
+                    {'x': x - lw - 40, 'y': y - 20, 'leader': True},
+                    {'x': x, 'y': y + h + 60, 'leader': True},
+                    {'x': x, 'y': y - lh - 60, 'leader': True},
+                ]
 
-            # DEBUG: Log font size
-            if len(positions) < 3:  # Only log first few to avoid spam
-                print(f"  [Overlay] DEBUG: Label font size = {label_font_size}px for text '{translated_text[:20]}'")
+                for cand in candidates:
+                    rect = {'x': cand['x'], 'y': cand['y'], 'width': lw, 'height': lh}
+                    
+                    # Bounds check
+                    if (rect['x'] < 0 or rect['y'] < 0 or 
+                        rect['x'] + lw > width or rect['y'] + lh > height):
+                        continue
+                    
+                    # Collision check
+                    if not self._has_collision(rect, occupied_regions):
+                        best_pos = rect
+                        best_pos['font_size'] = current_fs
+                        best_pos['needs_leader'] = cand['leader']
+                        break
+                
+                if best_pos: break
 
-            # Calculate English text dimensions
-            try:
-                font = ImageFont.truetype(self.label_font_name, int(label_font_size))
-            except:
-                font = ImageFont.load_default()
-
-            # Get text bounding box
-            temp_img = Image.new('RGBA', (1, 1))
-            temp_draw = ImageDraw.Draw(temp_img)
-            bbox = temp_draw.textbbox((0, 0), translated_text, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-
-            # Add padding
-            label_width = text_width + 2 * self.padding_x
-            label_height = text_height + 2 * self.padding_y
-
-            # Calculate primary position based on orientation
-            if orientation == 'vertical':
-                # Place to the right of Japanese text
-                primary_x = x + w + self.gap_from_original
-                primary_y = y
-            else:  # horizontal (default)
-                # Place below Japanese text
-                primary_x = x
-                primary_y = y + h + self.gap_from_original
-
-            # Create candidate positions (in order of preference)
-            candidates = [
-                {'x': primary_x, 'y': primary_y, 'anchor': 'primary'},
-                {'x': x, 'y': y - label_height - self.gap_from_original, 'anchor': 'above'},
-                {'x': x - label_width - self.gap_from_original, 'y': y, 'anchor': 'left'},
-                {'x': x + w + self.gap_from_original, 'y': y, 'anchor': 'right'},
-            ]
-
-            # Find first position without collision
-            final_position = None
-            for candidate in candidates:
-                candidate_rect = {
-                    'x': candidate['x'],
-                    'y': candidate['y'],
-                    'width': label_width,
-                    'height': label_height
+            # Fallback
+            if not best_pos:
+                best_pos = {
+                    'x': max(0, min(x, width - 20)), 
+                    'y': max(0, min(y + h + 2, height - 10)),
+                    'width': 20, 'height': 10, 'font_size': self.min_font_size, 'needs_leader': True
                 }
 
-                # Check if within image bounds
-                if (candidate['x'] < 0 or candidate['y'] < 0 or
-                    candidate['x'] + label_width > width or
-                    candidate['y'] + label_height > height):
-                    continue
-
-                # Check collision with occupied regions
-                if not self._has_collision(candidate_rect, occupied_regions):
-                    final_position = candidate_rect
-                    final_position['font_size'] = label_font_size
-                    final_position['anchor'] = candidate['anchor']
-                    break
-
-            # Fallback: use primary position even if collision (best effort)
-            if final_position is None:
-                final_position = {
-                    'x': max(0, min(primary_x, width - label_width)),
-                    'y': max(0, min(primary_y, height - label_height)),
-                    'width': label_width,
-                    'height': label_height,
-                    'font_size': label_font_size,
-                    'anchor': 'fallback'
-                }
-
-            positions.append(final_position)
-            occupied_regions.append(final_position)
+            positions.append(best_pos)
+            occupied_regions.append(best_pos)
 
         return positions
 
     def _has_collision(self, rect: Dict, occupied: List[Dict]) -> bool:
-        """Check if rectangle collides with any occupied region."""
         for occ in occupied:
-            # Check for overlap with minimum distance
             if not (rect['x'] + rect['width'] + self.min_distance < occ['x'] or
                     rect['x'] > occ['x'] + occ['width'] + self.min_distance or
                     rect['y'] + rect['height'] + self.min_distance < occ['y'] or
@@ -233,91 +202,51 @@ class DiagramOverlayRenderer:
                 return True
         return False
 
-    def _render_overlay_label(
-        self,
-        draw: ImageDraw.Draw,
-        text: str,
-        position: Dict,
-        orientation: str
-    ):
-        """
-        Render a single overlay label with semi-transparent background.
-
-        Args:
-            draw: PIL ImageDraw object
-            text: English text to render
-            position: Position dict with x, y, width, height, font_size
-            orientation: 'horizontal' or 'vertical'
-        """
-        if position is None:
-            return
-
-        x = position['x']
-        y = position['y']
-        label_width = position['width']
-        label_height = position['height']
-        font_size = position['font_size']
-
-        # Load font
+    def _get_font(self, size: int):
         try:
-            font = ImageFont.truetype(self.label_font_name, int(font_size))
+            if self.label_font_path:
+                return ImageFont.truetype(self.label_font_path, size)
+            return ImageFont.load_default()
         except:
-            font = ImageFont.load_default()
+            return ImageFont.load_default()
 
-        # Draw semi-transparent background
-        bg_rect = (
-            x,
-            y,
-            x + label_width,
-            y + label_height
-        )
+    def _draw_leader_line(self, draw: ImageDraw.Draw, source_bbox: Tuple, target_pos: Dict):
+        """Draw a leader line with an arrow head for maximum clarity."""
+        sx, sy, sw, sh = source_bbox
+        tx, ty, tw, th = target_pos['x'], target_pos['y'], target_pos['width'], target_pos['height']
+        
+        # Center of original
+        start_pt = (sx + sw // 2, sy + sh // 2)
+        # Edge of translation
+        if tx > sx + sw: # Translation is to the right
+            end_pt = (tx, ty + th // 2)
+        elif tx + tw < sx: # Translation is to the left
+            end_pt = (tx + tw, ty + th // 2)
+        elif ty > sy + sh: # Translation is below
+            end_pt = (tx + tw // 2, ty)
+        else: # Translation is above
+            end_pt = (tx + tw // 2, ty + th)
+            
+        # Draw main leader line
+        draw.line([start_pt, end_pt], fill=(*self.leader_color, 255), width=self.leader_width)
+        
+        # Draw a small circle or arrow head at the source (Japanese text) to anchor it visually
+        r = 3
+        draw.ellipse([start_pt[0]-r, start_pt[1]-r, start_pt[0]+r, start_pt[1]+r],
+                     fill=(*self.leader_color, 255))
 
-        # Create semi-transparent background
+    def _render_overlay_label(self, draw, text, pos):
+        x, y, lw, lh, fs = pos['x'], pos['y'], pos['width'], pos['height'], pos['font_size']
+        font = self._get_font(int(fs))
+        
+        # Draw background with slightly rounded feel (via double rect)
         bg_alpha = int(255 * self.bg_opacity)
-        draw.rectangle(
-            bg_rect,
-            fill=(*self.bg_color, bg_alpha)
-        )
-
-        # Draw subtle border
-        if self.border_width > 0:
-            draw.rectangle(
-                bg_rect,
-                outline=(*self.border_color, 255),
-                width=self.border_width
-            )
-
-        # Draw English text
-        text_x = x + self.padding_x
-        text_y = y + self.padding_y
-
-        draw.text(
-            (text_x, text_y),
-            text,
-            fill=(*self.text_color, 255),
-            font=font
-        )
+        draw.rectangle([x, y, x + lw, y + lh], fill=(*self.bg_color, bg_alpha), outline=(*self.border_color, 255), width=1)
+        
+        # Text center-aligned in box
+        draw.text((x + self.padding_x, y + self.padding_y), text, fill=(*self.text_color, 255), font=font)
 
 
-def create_bilingual_diagram(
-    original_image_path: str,
-    text_boxes: List[Dict],
-    output_path: str
-) -> str:
-    """
-    Convenience function to create bilingual diagram.
-
-    Args:
-        original_image_path: Path to original diagram
-        text_boxes: List of text elements with translations
-        output_path: Where to save result
-
-    Returns:
-        Path to bilingual diagram
-    """
+def create_bilingual_diagram(original_image_path: str, text_boxes: List[Dict], output_path: str) -> str:
     renderer = DiagramOverlayRenderer()
-    return renderer.render_bilingual_diagram(
-        original_image_path,
-        text_boxes,
-        output_path
-    )
+    return renderer.render_bilingual_diagram(original_image_path, text_boxes, output_path)

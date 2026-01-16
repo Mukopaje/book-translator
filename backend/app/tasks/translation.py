@@ -40,7 +40,14 @@ class DBTask(Task):
             self._db = None
 
 
-@celery_app.task(bind=True, base=DBTask, name='app.tasks.translation.process_page_task')
+@celery_app.task(
+    bind=True,
+    base=DBTask,
+    name='app.tasks.translation.process_page_task',
+    autoretry_for=(Exception,),
+    retry_kwargs={'max_retries': 3},
+    retry_backoff=True
+)
 def process_page_task(self, page_id: int, project_id: int):
     """
     Process a single page: OCR, translate, generate PDF.
@@ -366,32 +373,28 @@ def process_batch_task(self, project_id: int, page_ids: list):
             )
             
             # Process the page
-            # Execute synchronously using apply() to ensure proper context
-            task_result = process_page_task.apply(args=[page_id, project_id])
+            # Execute asynchronously using delay() to enable parallel processing and prevent timeouts
+            task_result = process_page_task.delay(page_id, project_id)
             
-            if task_result.failed():
-                raise task_result.result
-                
-            result = task_result.result
-            results.append(result)
+            results.append({
+                'status': 'queued',
+                'page_id': page_id,
+                'task_id': task_result.id
+            })
             
         except Exception as e:
-            logger.error(f"Failed to process page {page_id}: {e}")
+            logger.error(f"Failed to dispatch page {page_id}: {e}")
             results.append({
                 'status': 'failed',
                 'page_id': page_id,
                 'error': str(e)
             })
     
-    # Calculate statistics
-    completed = sum(1 for r in results if r['status'] == 'completed')
-    failed = len(results) - completed
-    
-    logger.info(f"Batch processing complete: {completed} succeeded, {failed} failed")
+    logger.info(f"Batch dispatch complete: {len(results)} tasks queued")
     
     return {
         'total': len(page_ids),
-        'completed': completed,
-        'failed': failed,
+        'queued': len(results),
+        'status': 'dispatched',
         'results': results
     }

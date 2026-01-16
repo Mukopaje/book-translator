@@ -74,6 +74,69 @@ class GeminiTranslator:
             return response.text.strip()
         except Exception as e:
             raise Exception(f"Gemini translation failed: {str(e)}")
+
+    def translate_batch_structured(self, texts: list, context: str = None, source_lang: str = 'ja', target_lang: str = 'en') -> list:
+        """
+        Translate a batch of texts and return structured JSON output
+        Ensures perfect alignment between source and translation
+        """
+        if not self.available:
+            return texts
+            
+        if not texts:
+            return []
+
+        # Define schema for the response
+        from pydantic import BaseModel, Field
+        from typing import List
+
+        class TranslationItem(BaseModel):
+            index: int = Field(description="The index of the text in the input list")
+            original: str = Field(description="The original source text")
+            translation: str = Field(description="The translated text")
+
+        class TranslationResponse(BaseModel):
+            translations: List[TranslationItem]
+
+        # Prepare input for Gemini
+        input_data = [{"index": i, "text": t} for i, t in enumerate(texts)]
+        
+        prompt = f"""You are an expert technical translator.
+CONTEXT: {context or 'Technical manual diagram labels'}
+SOURCE LANGUAGE: {source_lang}
+TARGET LANGUAGE: {target_lang}
+
+Translate each of the following labels to the target language.
+Return a JSON object containing a list of translations with their original indices.
+
+LABELS TO TRANSLATE:
+{input_data}
+"""
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": TranslationResponse,
+                }
+            )
+            
+            # Parse the structured response
+            structured_data = response.parsed
+            
+            # Reconstruct list based on indices to ensure order
+            results = [texts[i] for i in range(len(texts))]
+            for item in structured_data.translations:
+                if 0 <= item.index < len(results):
+                    results[item.index] = item.translation
+            
+            return results
+            
+        except Exception as e:
+            print(f"  [Gemini] Structured batch translation failed: {e}. Falling back to original.")
+            return texts
     
     def _build_translation_prompt(self, text: str, context: str, source_lang: str, target_lang: str) -> str:
         """Build optimized prompt for Gemini translation"""
@@ -227,7 +290,10 @@ TEXT TO ORGANIZE:
 ORGANIZED TEXT (with \\n\\n between paragraphs):"""
         
         try:
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             organized_text = response.text.strip()
             
             # Split into paragraphs

@@ -32,6 +32,14 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=True)
+    
+    # Billing & Credits
+    is_admin = Column(Integer, default=0) # 0: user, 1: admin
+    total_credits = Column(Integer, default=5) # 5 free pages initially
+    used_credits = Column(Integer, default=0)
+    stripe_customer_id = Column(String(255), nullable=True)
+    subscription_status = Column(String(50), default="free") # free, pro, scale, cancelled
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     

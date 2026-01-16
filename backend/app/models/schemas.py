@@ -38,6 +38,10 @@ class UserResponse(BaseModel):
     id: int
     email: str
     full_name: Optional[str]
+    is_admin: int
+    total_credits: int
+    used_credits: int
+    subscription_status: str
     created_at: datetime
     
     class Config:

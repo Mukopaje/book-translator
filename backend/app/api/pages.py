@@ -39,6 +39,13 @@ async def upload_page(
     """Upload a new page image to a project."""
     # Verify access
     project = verify_project_access(project_id, current_user, db)
+
+    # CREDIT CHECK: Enforce limits
+    if current_user.used_credits >= current_user.total_credits:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"You have reached your limit of {current_user.total_credits} pages. Please upgrade your subscription."
+        )
     
     # Check if page number already exists
     existing_page = db.query(Page).filter(
@@ -75,6 +82,9 @@ async def upload_page(
     if project.status == ProjectStatus.CREATED:
         project.status = ProjectStatus.PROCESSING
     
+    # Consume 1 credit
+    current_user.used_credits += 1
+    
     db.commit()
     db.refresh(new_page)
     
@@ -99,14 +109,14 @@ def list_pages(
     Args:
         project_id: Project ID
         skip: Number of pages to skip (for pagination)
-        limit: Maximum number of pages to return (default: 20, max: 500)
+        limit: Maximum number of pages to return (default: 20, max: 1000)
         status_filter: Optional status filter (UPLOADED, PROCESSING, COMPLETED, FAILED, NEEDS_REVIEW)
     """
     # Verify access
     verify_project_access(project_id, current_user, db)
 
     # Limit the maximum page size to prevent overload
-    limit = min(limit, 500)
+    limit = min(limit, 1000)
 
     # Build query with optional status filter
     query = db.query(Page).filter(Page.project_id == project_id)

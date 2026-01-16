@@ -126,6 +126,109 @@ class APIClient:
         response.raise_for_status()
         return response.content
     
+    def reset_project_pages(self, project_id: int) -> Dict[str, Any]:
+        """Reset all pages in a project to UPLOADED status."""
+        response = requests.post(
+            f"{self.base_url}/projects/{project_id}/reset-pages",
+            headers=self._headers()
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def batch_update_page_status(self, project_id: int, status: str, page_ids: list[int] = None) -> Dict[str, Any]:
+        """Update status for multiple pages."""
+        data = {"status": status}
+        if page_ids:
+            data["page_ids"] = page_ids
+            
+        response = requests.post(
+            f"{self.base_url}/projects/{project_id}/pages/batch-update",
+            headers=self._headers(),
+            json=data
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_project_progress(self, project_id: int) -> Dict[str, Any]:
+        """Get project progress statistics."""
+        response = requests.get(
+            f"{self.base_url}/projects/{project_id}/progress",
+            headers=self._headers()
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def cleanup_stuck_tasks(self) -> Dict[str, Any]:
+        """Trigger cleanup of stuck tasks."""
+        response = requests.post(
+            f"{self.base_url}/tasks/maintenance/cleanup-stuck",
+            headers=self._headers()
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_list_users(self) -> list:
+        """List all users (Admin only)."""
+        response = requests.get(
+            f"{self.base_url}/tasks/admin/users",
+            headers=self._headers()
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_give_credits(self, user_id: int, amount: int) -> Dict[str, Any]:
+        """Grant credits to a user (Admin only)."""
+        response = requests.post(
+            f"{self.base_url}/tasks/admin/give-credits",
+            headers=self._headers(),
+            json={"user_id": user_id, "amount": amount}
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_admin_stats(self) -> Dict[str, Any]:
+        """Get system-wide statistics (Admin only)."""
+        response = requests.get(
+            f"{self.base_url}/tasks/admin/stats",
+            headers=self._headers()
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_update_system_config(self, stripe_data: dict) -> Dict[str, Any]:
+        """Update system settings (Admin only)."""
+        response = requests.post(
+            f"{self.base_url}/tasks/admin/config",
+            headers=self._headers(),
+            json=stripe_data
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def create_checkout_session(self, plan: str) -> Dict[str, Any]:
+        """Create a Stripe Checkout session for a plan."""
+        response = requests.post(
+            f"{self.base_url}/tasks/billing/create-checkout-session",
+            headers=self._headers(),
+            params={"plan": plan}
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_upload_portfolio(self, orig_file, trans_file) -> Dict[str, Any]:
+        """Upload a portfolio pair (Admin only)."""
+        files = {
+            "original": (orig_file.name, orig_file, "image/jpeg"),
+            "translated": (trans_file.name, trans_file, "image/jpeg")
+        }
+        response = requests.post(
+            f"{self.base_url}/tasks/admin/upload-portfolio",
+            headers={"Authorization": f"Bearer {self.token}"},
+            files=files
+        )
+        response.raise_for_status()
+        return response.json()
+
     # Pages
     def upload_page(self, project_id: int, page_number: int, file: BinaryIO, filename: str) -> Dict[str, Any]:
         """Upload page image."""

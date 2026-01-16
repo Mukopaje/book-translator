@@ -549,14 +549,36 @@ class SmartLayoutReconstructor:
             if source_list:
                 best_match = None
                 best_overlap = 0
-                for trans_diag in source_list:
+                best_match_idx = -1
+                for idx, trans_diag in enumerate(source_list):
+                    # Skip if this diagram was already used
+                    if trans_diag.get('_used', False):
+                        continue
                     region = trans_diag['region']
-                    # Overlap logic
-                    overlap_y = max(section_y_start, region['y'])
-                    overlap_h = max(0, min(section_y_start + section_height, region['y'] + region['h']) - overlap_y)
-                    if overlap_h > 0:
+                    # Calculate overlap with BOTH y and x coordinates for better matching
+                    overlap_y_start = max(section_y_start, region['y'])
+                    overlap_y_end = min(section_y_start + section_height, region['y'] + region['h'])
+                    overlap_h = max(0, overlap_y_end - overlap_y_start)
+
+                    # Also check x overlap for multi-diagram pages
+                    section_x = section.get('x', 0)
+                    section_w = section.get('w', 10000)  # Default to large if not specified
+                    overlap_x_start = max(section_x, region['x'])
+                    overlap_x_end = min(section_x + section_w, region['x'] + region['w'])
+                    overlap_w = max(0, overlap_x_end - overlap_x_start)
+
+                    # Total overlap area
+                    overlap_area = overlap_h * overlap_w
+
+                    if overlap_area > best_overlap:
+                        best_overlap = overlap_area
                         best_match = trans_diag
-                        break # First match
+                        best_match_idx = idx
+
+                # Mark the matched diagram as used to prevent double-matching
+                if best_match and best_match_idx >= 0:
+                    source_list[best_match_idx]['_used'] = True
+                    print(f"[DEBUG] Matched diagram {best_match_idx} with overlap area {best_overlap}")
 
                 if best_match:
                     # Store both the translated image and original crop

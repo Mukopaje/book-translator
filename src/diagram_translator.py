@@ -319,7 +319,7 @@ class DiagramTranslator:
                             target_lang='en'
                         )
                 except Exception as e:
-                    print(f"    Translation failed for '{japanese_text}': {e}")
+                    print(f"    [DiagramTranslator] Translation failed for '{japanese_text}': {e}")
                     english_text = japanese_text
                 
                 # Filter out empty or whitespace-only translations
@@ -370,7 +370,10 @@ class DiagramTranslator:
                     'h': h,
                     'original': japanese_text
                 })
-                print(f"    '{japanese_text}' → '{english_text}'")
+                
+                # Check for identity (potential "failure" to translate)
+                status = " [IDENTITY]" if japanese_text.strip() == english_text.strip() else ""
+                print(f"    [DiagramTranslator] '{japanese_text}' → '{english_text}'{status}")
             
             # Save translated diagram
             if output_path:

@@ -1,7 +1,7 @@
 """Project management API endpoints."""
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from app.database import get_db
 from app.models.db_models import User, Project, ProjectStatus, Page, PageStatus
 from app.models.schemas import ProjectCreate, ProjectUpdate, ProjectResponse, ProjectListResponse
@@ -130,6 +130,150 @@ def delete_project(
     # storage_service.delete_project_files(project_id)
     
     return None
+
+
+@router.post("/{project_id}/reset-pages")
+def reset_project_pages(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Reset all pages in a project to UPLOADED status for re-processing."""
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.user_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Update all pages
+    db.query(Page).filter(
+        Page.project_id == project_id
+    ).update({
+        "status": PageStatus.UPLOADED,
+        "error_message": None,
+        "quality_score": None,
+        "quality_level": None
+    }, synchronize_session=False)
+    
+    # Reset project stats
+    project.completed_pages = 0
+    project.status = ProjectStatus.CREATED
+    
+    db.commit()
+    db.refresh(project)
+    
+    return {"message": "All pages reset to UPLOADED status", "project_id": project_id}
+
+
+from pydantic import BaseModel
+class BatchUpdateStatusRequest(BaseModel):
+    status: str
+    page_ids: Optional[List[int]] = None  # None means ALL pages
+
+@router.post("/{project_id}/pages/batch-update")
+def batch_update_page_status(
+    project_id: int,
+    update_request: BatchUpdateStatusRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update status for multiple pages."""
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.user_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    # validate status
+    valid_statuses = [s.value for s in PageStatus]
+    if update_request.status not in valid_statuses:
+         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of {valid_statuses}")
+    
+    query = db.query(Page).filter(Page.project_id == project_id)
+    
+    if update_request.page_ids:
+        query = query.filter(Page.id.in_(update_request.page_ids))
+        
+    updated_count = query.update({
+        "status": update_request.status,
+        "error_message": None if update_request.status == PageStatus.UPLOADED else Page.error_message
+    }, synchronize_session=False)
+    
+    db.commit()
+    return {"message": f"Updated {updated_count} pages to {update_request.status}"}
+
+
+@router.get("/{project_id}/progress")
+def get_project_progress(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get live aggregated progress stats for a project."""
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.user_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Efficiently count by status using GROUP BY
+    from sqlalchemy import func
+    stats = db.query(
+        Page.status, func.count(Page.id)
+    ).filter(
+        Page.project_id == project_id
+    ).group_by(Page.status).all()
+    
+    result = {
+        "total": 0,
+        "uploaded": 0,
+        "queued": 0,
+        "processing": 0,
+        "completed": 0,
+        "failed": 0,
+        "needs_review": 0
+    }
+    
+    for status_enum, count in stats:
+        # Map enum to string key if needed, or use value
+        if hasattr(status_enum, 'value'):
+            status_key = status_enum.value.lower()
+        else:
+            status_key = str(status_enum).lower()
+            
+        result[status_key] = count
+        result["total"] += count
+
+    # Calculate speed (pages per minute in last 5 mins)
+    from datetime import datetime, timedelta
+    five_mins_ago = datetime.utcnow() - timedelta(minutes=5)
+    
+    recent_completed = db.query(Page).filter(
+        Page.project_id == project_id,
+        Page.status == PageStatus.COMPLETED,
+        Page.processed_at >= five_mins_ago
+    ).count()
+    
+    # PPM = recent_completed / 5 minutes
+    ppm = recent_completed / 5.0
+    result["pages_per_minute"] = round(ppm, 2)
+    
+    # Estimate remaining time
+    remaining = result.get("queued", 0) + result.get("processing", 0) + result.get("uploaded", 0)
+    
+    if ppm > 0.1: # Threshold to avoid massive numbers
+        minutes_left = remaining / ppm
+        result["estimated_minutes_remaining"] = round(minutes_left, 1)
+    else:
+        result["estimated_minutes_remaining"] = None
+        
+    return result
 
 
 @router.get("/{project_id}/download-book")

@@ -144,12 +144,384 @@ def init_state():
     if 'status_filter' not in st.session_state:
         st.session_state.status_filter = None
 
+def render_upgrade_page():
+    """Render the upgrade/pricing page for logged-in users."""
+    api = get_api_client()
+    st.title("🚀 Upgrade Your Plan")
+    st.markdown("Select a plan to increase your page credit limit.")
+    
+    p1, p2, p3 = st.columns(3)
+    
+    with p1:
+        st.markdown("""
+            <div class="glass-card">
+                <p class="badge">FREE</p>
+                <h3>Basic</h3>
+                <p>5 Credits</p>
+                <hr>
+                <p>Current Plan</p>
+            </div>
+        """, unsafe_allow_html=True)
+        
+    with p2:
+        st.markdown('<div class="price-card-premium">', unsafe_allow_html=True)
+        st.markdown("""
+                <p class="badge">PROFESSIONAL</p>
+                <h3>$29/mo</h3>
+                <p>300 Credits</p>
+        """, unsafe_allow_html=True)
+        if st.button("Subscribe to Pro", type="primary", key="sub_pro"):
+            try:
+                res = api.create_checkout_session("pro")
+                st.link_button("Go to Checkout", url=res['url'], type="primary")
+            except Exception as e:
+                st.error(f"Error: {e}")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+    with p3:
+        st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+        st.markdown("""
+                <p class="badge">SCALE</p>
+                <h3>$79/mo</h3>
+                <p>1,000 Credits</p>
+        """, unsafe_allow_html=True)
+        if st.button("Subscribe to Scale", type="primary", key="sub_scale"):
+            try:
+                res = api.create_checkout_session("scale")
+                st.link_button("Go to Checkout", url=res['url'], type="primary")
+            except Exception as e:
+                st.error(f"Error: {e}")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.button("⬅️ Back to Dashboard"):
+        st.session_state.show_upgrade = False
+        st.rerun()
+
+def render_landing_page():
+    """Render a high-end, Dark Technical (Vercel-style) landing page."""
+    st.markdown("""
+        <style>
+        /* Modern Dark Technical Aesthetic */
+        .stApp { background-color: #000000; color: #ffffff; }
+        
+        /* Hero Section */
+        .hero-container {
+            padding: 100px 0 60px 0;
+            text-align: center;
+            background: radial-gradient(circle at 50% -20%, #1e293b 0%, #000000 100%);
+        }
+        .hero-title {
+            font-size: 4.5rem;
+            font-weight: 800;
+            background: linear-gradient(to bottom right, #ffffff 30%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.05em;
+            margin-bottom: 20px;
+        }
+        .hero-subtitle {
+            font-size: 1.5rem;
+            color: #94a3b8;
+            max-width: 800px;
+            margin: 0 auto 40px auto;
+            line-height: 1.6;
+        }
+        
+        /* Feature Cards */
+        .glass-card {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(51, 65, 85, 0.5);
+            border-radius: 20px;
+            padding: 35px;
+            height: 100%;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(10px);
+        }
+        .glass-card:hover {
+            border-color: #3b82f6;
+            transform: translateY(-5px);
+            box-shadow: 0 0 30px rgba(59, 130, 246, 0.1);
+        }
+        
+        /* Pricing Cards */
+        .pricing-grid { margin-top: 60px; }
+        .price-card-premium {
+            background: linear-gradient(180deg, #0f172a 0%, #000000 100%);
+            border: 1px solid #3b82f6;
+            border-radius: 24px;
+            padding: 40px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .price-card-premium::before {
+            content: "POPULAR";
+            position: absolute;
+            top: 20px;
+            right: -30px;
+            background: #3b82f6;
+            color: white;
+            padding: 5px 40px;
+            transform: rotate(45deg);
+            font-size: 0.7rem;
+            font-weight: 900;
+        }
+
+        /* Dashboard & Admin UI Modernization */
+        .metric-card {
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+        }
+        
+        .stSidebar {
+            background-color: #0f172a !important;
+            border-right: 1px solid #1e293b;
+        }
+
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 24px;
+            background-color: transparent;
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            white-space: pre-wrap;
+            background-color: transparent;
+            border-radius: 4px 4px 0px 0px;
+            gap: 1px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            font-weight: 600;
+            color: #94a3b8;
+        }
+
+        .stTabs [aria-selected="true"] {
+            color: #3b82f6 !important;
+            border-bottom: 2px solid #3b82f6 !important;
+        }
+        
+        .badge {
+            background: rgba(59, 130, 246, 0.1);
+            color: #60a5fa;
+            padding: 4px 12px;
+            border-radius: 99px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            border: 1px solid rgba(59, 130, 246, 0.2);
+        }
+        
+        /* Buttons */
+        .stButton>button {
+            border-radius: 10px;
+            text-transform: uppercase;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Hero Section
+    st.markdown("""
+        <div class="hero-container">
+            <span class="badge">NOW IN PRIVATE BETA</span>
+            <h1 class="hero-title">Technical Archeology<br>Powered by AI</h1>
+            <p class="hero-subtitle">
+                The world's most advanced engine for localizing high-spec engineering manuals.
+                Preserving specialized knowledge across Japanese, German, and English with
+                pinpoint diagram reconstruction.
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Call to Action
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c2:
+        if st.button("🚀 Enter the Vault", type="primary", use_container_width=True):
+            st.session_state.show_auth = True
+            st.rerun()
+
+    st.markdown("<br><br>", unsafe_allow_html=True)
+
+    # Portfolio Showcase (How it Works)
+    st.markdown("<h2 style='text-align: center;'>See the System in Action</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #94a3b8; margin-bottom: 40px;'>Our engine reconstructs technical layouts with pinpoint accuracy, preserved in high-spec engineering blueprints.</p>", unsafe_allow_html=True)
+    
+    # Dynamic Portfolio Slide Show
+    try:
+        api = get_api_client()
+        # For public landing page, we need a lightweight stats or public config call
+        # Using a default if not configured
+        portfolio = []
+        try:
+             # In production, this would be a public endpoint.
+             # For now, we fetch via admin if possible, else use default.
+             stats = api.get_admin_stats()
+             portfolio = stats.get('example_screenshots', [])
+        except:
+             # Fallback default pair
+             portfolio = ["https://storage.googleapis.com/book-translator-public/sample_diagram_1_orig.jpg|https://storage.googleapis.com/book-translator-public/sample_diagram_1_trans.jpg"]
+
+        if portfolio:
+            # Simple state-based slideshow
+            if 'portfolio_idx' not in st.session_state:
+                st.session_state.portfolio_idx = 0
+            
+            current_pair = portfolio[st.session_state.portfolio_idx % len(portfolio)]
+            orig, trans = current_pair.split('|')
+            
+            ex_col1, ex_col2 = st.columns(2)
+            with ex_col1:
+                 st.markdown(f"""
+                    <div class="glass-card" style='text-align: center;'>
+                        <h4 style='color: #60a5fa;'>Original Diagram</h4>
+                        <img src="{orig}" style='width: 100%; border-radius: 10px; margin-top: 10px;'>
+                    </div>
+                 """, unsafe_allow_html=True)
+                 
+            with ex_col2:
+                 st.markdown(f"""
+                    <div class="glass-card" style='text-align: center;'>
+                        <h4 style='color: #60a5fa;'>Translated Result</h4>
+                        <img src="{trans}" style='width: 100%; border-radius: 10px; margin-top: 10px;'>
+                    </div>
+                 """, unsafe_allow_html=True)
+
+            if len(portfolio) > 1:
+                if st.button("Next Example ❯", type="secondary"):
+                    st.session_state.portfolio_idx += 1
+                    st.rerun()
+    except Exception as e:
+        st.error(f"Portfolio error: {e}")
+
+    st.markdown("<br><br>", unsafe_allow_html=True)
+
+    # How It Works Section
+    st.markdown("<h2 style='text-align: center;'>Seamless Workflow</h2>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    w1, w2, w3, w4 = st.columns(4)
+    with w1:
+        st.markdown("""
+            <div style='text-align: center;'>
+                <h1 style='color: #3b82f6; font-size: 3rem;'>1</h1>
+                <h4>Upload</h4>
+                <p style='color: #94a3b8; font-size: 0.9rem;'>Drop your scanned JPG or PNG technical pages.</p>
+            </div>
+        """, unsafe_allow_html=True)
+    with w2:
+        st.markdown("""
+            <div style='text-align: center;'>
+                <h1 style='color: #3b82f6; font-size: 3rem;'>2</h1>
+                <h4>Analyze</h4>
+                <p style='color: #94a3b8; font-size: 0.9rem;'>AI detects diagrams, charts, and specialized tables.</p>
+            </div>
+        """, unsafe_allow_html=True)
+    with w3:
+        st.markdown("""
+            <div style='text-align: center;'>
+                <h1 style='color: #3b82f6; font-size: 3rem;'>3</h1>
+                <h4>Localize</h4>
+                <p style='color: #94a3b8; font-size: 0.9rem;'>Precise translation with bilingual overlays.</p>
+            </div>
+        """, unsafe_allow_html=True)
+    with w4:
+        st.markdown("""
+            <div style='text-align: center;'>
+                <h1 style='color: #3b82f6; font-size: 3rem;'>4</h1>
+                <h4>Export</h4>
+                <p style='color: #94a3b8; font-size: 0.9rem;'>Download high-res, merged PDF technical manuals.</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br><br>---<br><br>", unsafe_allow_html=True)
+
+    # Core Features
+    st.markdown("### 🛠️ Built for Precision")
+    f1, f2, f3 = st.columns(3)
+    
+    with f1:
+        st.markdown("""
+            <div class="glass-card">
+                <h3>Bilingual Overlays</h3>
+                <p style='color: #94a3b8;'>Intelligent pointer-and-label system that keeps original diagrams 100% intact while adding high-contrast translations.</p>
+            </div>
+        """, unsafe_allow_html=True)
+    with f2:
+        st.markdown("""
+            <div class="glass-card">
+                <h3>Technical Integrity</h3>
+                <p style='color: #94a3b8;'>Context-aware translation utilizing Gemini 2.5 Flash. Specialized in maritime, aerospace, and heavy machinery terminology.</p>
+            </div>
+        """, unsafe_allow_html=True)
+    with f3:
+        st.markdown("""
+            <div class="glass-card">
+                <h3>Artifact Extraction</h3>
+                <p style='color: #94a3b8;'>Automatic detection and extraction of complex charts, tables, and technical keys into structured data formats.</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br><br>---<br><br>", unsafe_allow_html=True)
+    
+    # Pricing Section
+    st.markdown("<h2 style='text-align: center;'>Choose Your Scale</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #94a3b8;'>Transparent, credit-based pricing designed for technical workflows.</p>", unsafe_allow_html=True)
+    
+    p1, p2, p3 = st.columns(3)
+    
+    with p1:
+        st.markdown("""
+            <div class="glass-card">
+                <p class="badge">FREE</p>
+                <h1 style='margin: 20px 0;'>$0</h1>
+                <p style='color: #60a5fa;'>5 Page Credits</p>
+                <hr style='border-color: #334155'>
+                <p>✓ Smart Layout</p>
+                <p>✓ Basic Diagrams</p>
+                <p>✓ PDF Export</p>
+            </div>
+        """, unsafe_allow_html=True)
+        
+    with p2:
+        st.markdown("""
+            <div class="price-card-premium">
+                <p class="badge">PROFESSIONAL</p>
+                <h1 style='margin: 20px 0;'>$29<small style='font-size: 1rem; color: #94a3b8;'>/mo</small></h1>
+                <p style='color: #60a5fa;'>300 Page Credits</p>
+                <hr style='border-color: #334155'>
+                <p>✓ <b>Bilingual Overlay System</b></p>
+                <p>✓ Priority Worker Queue</p>
+                <p>✓ Interactive Label Review</p>
+                <p>✓ Merged Book Export</p>
+            </div>
+        """, unsafe_allow_html=True)
+        
+    with p3:
+        st.markdown("""
+            <div class="glass-card">
+                <p class="badge">SCALE</p>
+                <h1 style='margin: 20px 0;'>$79<small style='font-size: 1rem; color: #94a3b8;'>/mo</small></h1>
+                <p style='color: #60a5fa;'>1,000 Page Credits</p>
+                <hr style='border-color: #334155'>
+                <p>✓ Custom Terminology Toning</p>
+                <p>✓ Dedicated Worker Instance</p>
+                <p>✓ Batch API Access</p>
+                <p>✓ Support Tier 1</p>
+            </div>
+        """, unsafe_allow_html=True)
+
 def render_auth_page():
     """Render login/signup page."""
     api = get_api_client()
     
-    st.title("📚 Book Translator")
-    st.markdown("### AI-Powered Japanese to English Translation")
+    if st.button("⬅️ Back to Home"):
+         st.session_state.show_auth = False
+         st.rerun()
+
+    st.title("🔐 Secure Access")
     st.markdown("---")
     
     tab1, tab2 = st.tabs(["Login", "Sign Up"])
@@ -520,6 +892,39 @@ def render_sidebar():
     with st.sidebar:
         st.title("📚 Book Translator")
         st.markdown(f"**User:** {st.session_state.current_user['email']}")
+
+        # Credit Monitor
+        try:
+             user_info = api.get_current_user()
+             st.session_state.current_user.update(user_info)
+             
+             credits_total = user_info.get('total_credits', 5)
+             credits_used = user_info.get('used_credits', 0)
+             credits_left = max(0, credits_total - credits_used)
+             
+             st.markdown(f"**Credits:** {credits_left} / {credits_total} pages remaining")
+             
+             # Status indicator
+             sub_status = user_info.get('subscription_status', 'free')
+             status_color = "green" if sub_status != 'free' else "orange"
+             st.markdown(f"**Plan:** :{status_color}[{sub_status.upper()}]")
+             
+             if credits_left < 5:
+                  st.warning("Low on credits!")
+                  if st.button("💳 Upgrade Plan", use_container_width=True, type="primary"):
+                       st.session_state.show_upgrade = True
+                       st.rerun()
+
+             if user_info.get('is_admin'):
+                  st.markdown("---")
+                  st.markdown("### 👑 Admin Mode")
+                  if st.toggle("Enable Admin View", key="admin_view_toggle"):
+                       st.session_state.admin_mode = True
+                  else:
+                       st.session_state.admin_mode = False
+
+        except Exception as e:
+             logger.error(f"Failed to load user info in sidebar: {e}")
         
         if st.button("🚪 Logout"):
             st.query_params.clear()
@@ -721,6 +1126,33 @@ def render_sidebar():
 
         
         st.markdown("---")
+        
+        # System Maintenance
+        with st.expander("🛠️ Maintenance"):
+            st.caption("Use these tools if processing seems stuck.")
+            if st.button("🚑 Cleanup Stuck Tasks", help="Resets tasks stuck in 'PROCESSING' state"):
+                with st.spinner("Cleaning up..."):
+                    try:
+                        res = api.cleanup_stuck_tasks()
+                        st.success(res['message'])
+                        time.sleep(2)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+            
+            if st.button("🔄 Reset Project Pages", help="Resets all pages in this project to UPLOADED status"):
+                if st.session_state.current_project:
+                    with st.spinner("Resetting..."):
+                        try:
+                            res = api.reset_project_pages(st.session_state.current_project['id'])
+                            st.success(res['message'])
+                            time.sleep(2)
+                            st.session_state.pages_loaded_from_backend = False
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
+
+        st.markdown("---")
         st.header("Upload")
         uploaded = st.file_uploader("Add Pages", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True)
         if uploaded:
@@ -811,6 +1243,49 @@ def render_page_list():
                 with col_b:
                     st.info("You will be redirected to the login page after re-auth.")
     
+    # LIVE PROGRESS DASHBOARD
+    try:
+        api = get_api_client()
+        project_id = st.session_state.current_project['id']
+        progress = api.get_project_progress(project_id)
+        
+        # Determine if active processing is happening
+        is_active = (progress['queued'] > 0 or progress['processing'] > 0)
+        
+        st.markdown("### 📊 Project Dashboard")
+        
+        # Metrics
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Pages", progress['total'])
+        m2.metric("Completed", progress['completed'], delta=None)
+        
+        pending_count = progress['queued'] + progress['processing']
+        m3.metric("Pending", pending_count, delta="Active" if is_active else None, delta_color="normal")
+        
+        speed = progress.get('pages_per_minute', 0)
+        etr = progress.get('estimated_minutes_remaining')
+        
+        speed_val = f"{speed} / min"
+        if etr is not None:
+            m4.metric("Est. Time Remaining", f"{etr} mins", delta=speed_val)
+        else:
+            m4.metric("Processing Speed", speed_val)
+
+        # Progress Bar
+        if progress['total'] > 0:
+            pct = min(1.0, progress['completed'] / progress['total'])
+            st.progress(pct, text=f"{int(pct*100)}% Complete")
+            
+        if is_active:
+            st.caption(f"⚡ Processing active. Auto-refreshing... ({progress['processing']} processing, {progress['queued']} queued)")
+            time.sleep(3) # Faster refresh during active processing
+            st.rerun()
+            
+    except Exception as e:
+        logger.error(f"Failed to load progress stats: {e}")
+
+    st.markdown("---")
+
     # Header with total count and pagination info
     total = st.session_state.total_pages_count
     offset = st.session_state.current_page_offset
@@ -818,7 +1293,7 @@ def render_page_list():
     current_page_num = (offset // page_size) + 1
     total_page_groups = (total + page_size - 1) // page_size if total > 0 else 1
 
-    st.header(f"Pages ({total} total)")
+    st.header(f"Page List")
 
     # Show filter status if active
     if st.session_state.status_filter:
@@ -855,14 +1330,14 @@ def render_page_list():
     size_col, filter_col = st.columns([1, 2])
 
     with size_col:
-        page_size_options = [20, 50, 100, 500]
+        page_size_options = [20, 50, 100, 500, 1000]
         current_page_size = st.session_state.page_size
         selected_page_size = st.selectbox(
             "Pages per view",
             options=page_size_options,
             index=page_size_options.index(current_page_size) if current_page_size in page_size_options else 0,
             key="page_size_select",
-            help="Number of pages to display at once (max 500 for bulk operations)"
+            help="Number of pages to display at once (max 1000 for bulk operations)"
         )
 
         if selected_page_size != current_page_size:
@@ -1092,18 +1567,18 @@ def render_page_list():
             st.session_state['selected_pages'] = set()
 
         selected_count = len(st.session_state['selected_pages'])
-        button_label = f"🔁 Reprocess Selected ({selected_count})" if selected_count > 0 else "🔁 Reprocess Selected"
+        button_label = f"🔁 Reprocess ({selected_count})" if selected_count > 0 else "🔁 Reprocess"
 
         # Don't disable button - let it work even if count display is stale
         # The actual handler will check if there are pages selected
-        if st.button(button_label, key="reprocess_btn"):
+        if st.button(button_label, key="reprocess_btn", use_container_width=True):
             api = get_api_client()
             try:
                 # Get fresh set of selected IDs
                 selected_ids = list(st.session_state['selected_pages'])
 
                 if not selected_ids:
-                    st.warning("⚠️ No pages selected. Please select pages to reprocess.")
+                    st.warning("⚠️ No pages selected.")
                 else:
                     # Filter for backend IDs (integers)
                     backend_ids = []
@@ -1137,9 +1612,50 @@ def render_page_list():
                         st.session_state.pages_loaded_from_backend = False
                         st.rerun()
                     else:
-                        st.warning("Selected pages don't have valid backend IDs (integers). Are they uploaded?")
+                        st.warning("Selected pages don't have valid backend IDs.")
             except Exception as e:
                 st.error(f"Failed to reprocess: {e}")
+
+    with col6:
+        # NEW: Change Status batch action
+        with st.popover("🏷️ Status", use_container_width=True):
+            st.markdown("**Change status for selected:**")
+            new_status = st.selectbox(
+                "New Status",
+                options=["UPLOADED", "COMPLETED", "FAILED", "NEEDS_REVIEW"],
+                key="batch_status_val"
+            )
+            
+            selected_ids = list(st.session_state.get('selected_pages', []))
+            st.caption(f"Will update {len(selected_ids)} page(s)")
+            
+            if st.button("✅ Apply Change", type="primary", use_container_width=True):
+                if not selected_ids:
+                    st.warning("No pages selected")
+                else:
+                    try:
+                        api = get_api_client()
+                        project_id = st.session_state.current_project['id']
+                        # Filter for backend IDs (integers)
+                        backend_ids = [int(pid) for pid in selected_ids if str(pid).isdigit() or isinstance(pid, int)]
+                        
+                        if backend_ids:
+                            api.batch_update_page_status(project_id, new_status, backend_ids)
+                            st.success(f"Updated {len(backend_ids)} pages to {new_status}")
+                            
+                            # Clear selections
+                            st.session_state['selected_pages'] = set()
+                            keys_to_remove = [key for key in st.session_state.keys() if key.startswith('checkbox_')]
+                            for key in keys_to_remove:
+                                del st.session_state[key]
+                                
+                            time.sleep(1)
+                            st.session_state.pages_loaded_from_backend = False
+                            st.rerun()
+                        else:
+                            st.warning("No valid backend IDs selected")
+                    except Exception as e:
+                        st.error(f"Failed to update status: {e}")
 
     # Page list
     for i, page in enumerate(st.session_state['pages']):
@@ -1632,14 +2148,156 @@ def main():
                 # Clear invalid token
                 st.query_params.clear()
     
-    # Show auth page if not logged in
+    # Navigation Logic
+    if 'show_auth' not in st.session_state:
+         st.session_state.show_auth = False
+    if 'show_upgrade' not in st.session_state:
+         st.session_state.show_upgrade = False
+
+    # Show upgrade page for logged in users
+    if st.session_state.logged_in and st.session_state.get('show_upgrade'):
+         render_upgrade_page()
+         return
+
+    # Show auth page if requested or not logged in
     if not st.session_state.logged_in:
-        render_auth_page()
+        if st.session_state.show_auth:
+             render_auth_page()
+        else:
+             render_landing_page()
+             if st.sidebar.button("🔑 Login / Signup"):
+                  st.session_state.show_auth = True
+                  st.rerun()
         return
     
     # Main app (logged in)
     render_sidebar()
-    
+
+    # Super Admin View Logic
+    if st.session_state.get('admin_mode'):
+        st.title("🛡️ Super Admin Control Room")
+        st.markdown("---")
+        
+        try:
+            api = get_api_client()
+            stats = api.get_admin_stats()
+            
+            # Overview Metrics
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Users", stats['total_users'])
+            c2.metric("Premium Users", stats['premium_users'])
+            c3.metric("Total Pages", stats['total_pages'])
+            c4.metric("Failure Rate", f"{(stats['failed_pages']/(stats['total_pages'] or 1))*100:.1f}%")
+            
+            # Health Chart
+            st.subheader("System Health")
+            h1, h2 = st.columns(2)
+            with h1:
+                st.info(f"✅ Completed: {stats['completed_pages']}")
+                st.error(f"❌ Failed: {stats['failed_pages']}")
+            with h2:
+                st.success(f"⚡ Worker Queue: {stats['queue_latency']}")
+                if st.button("🧹 Cleanup Stuck Tasks", use_container_width=True):
+                    res = api.cleanup_stuck_tasks()
+                    st.success(res['message'])
+            
+            # User Management Section
+            st.markdown("---")
+            st.subheader("👥 User Management")
+            
+            users = api.admin_list_users()
+            user_options = {u['id']: f"{u['email']} (Credits: {u['total_credits'] - u['used_credits']})" for u in users}
+            
+            col_u1, col_u2 = st.columns([2, 1])
+            with col_u1:
+                selected_user_id = st.selectbox("Select User", options=list(user_options.keys()), format_func=lambda x: user_options[x])
+            
+            with col_u2:
+                credit_amount = st.number_input("Credits to Give", min_value=1, value=50)
+                if st.button("🎁 Grant Credits", use_container_width=True, type="primary"):
+                    res = api.admin_give_credits(selected_user_id, credit_amount)
+                    st.success(res['message'])
+                    time.sleep(1)
+                    st.rerun()
+            
+            # User Table
+            import pandas as pd
+            df = pd.DataFrame(users)
+            st.dataframe(df[['id', 'email', 'total_credits', 'used_credits', 'subscription_status', 'is_admin']], use_container_width=True)
+            
+            # Financial Reports
+            st.markdown("---")
+            st.subheader("💰 Financial Intelligence")
+            f1, f2, f3 = st.columns(3)
+            financials = stats.get('financials', {})
+            f1.metric("Est. MRR", f"${financials.get('mrr', 0):,.2f}")
+            f2.metric("Total Revenue", f"${financials.get('total_revenue', 0):,.2f}")
+            f3.metric("Avg. ARPU", f"${(financials.get('mrr', 0) / (stats['premium_users'] or 1)):,.2f}")
+
+            # System & Stripe Configuration
+            st.markdown("---")
+            st.subheader("⚙️ System Settings")
+            
+            set_tabs = st.tabs(["💳 Stripe", "🖼️ Portfolio/Examples", "🔧 Advanced"])
+            
+            with set_tabs[0]:
+                if stats.get('stripe_configured'):
+                    st.success("Stripe is active (API Key in Environment)")
+                else:
+                    st.warning("Stripe is dormant. Fill in details to enable global payments.")
+                    
+                with st.form("stripe_config"):
+                    s_key = st.text_input("Stripe Secret Key (sk_...)", type="password")
+                    s_webhook = st.text_input("Stripe Webhook Secret (whsec_...)", type="password")
+                    p_pro = st.text_input("Stripe Price ID (Professional)", value="price_...")
+                    p_scale = st.text_input("Stripe Price ID (Scale)", value="price_...")
+                    
+                    if st.form_submit_button("Update Payment Gateway"):
+                        res = api.admin_update_system_config({
+                            "stripe_api_key": s_key,
+                            "stripe_webhook_secret": s_webhook,
+                            "price_id_pro": p_pro,
+                            "price_id_scale": p_scale
+                        })
+                        st.success(res['message'])
+
+            with set_tabs[1]:
+                st.markdown("### 🖼️ Showcase Management")
+                st.markdown("Upload pairs of original and translated technical diagrams for the public landing page slideshow.")
+                
+                with st.form("portfolio_upload", clear_on_submit=True):
+                    col_p1, col_p2 = st.columns(2)
+                    with col_p1:
+                        orig_file = st.file_uploader("Original Image", type=['jpg', 'png'], key="p_orig")
+                    with col_p2:
+                        trans_file = st.file_uploader("Translated Image", type=['jpg', 'png'], key="p_trans")
+                    
+                    if st.form_submit_button("📤 Upload to Showcase"):
+                        if orig_file and trans_file:
+                            res = api.admin_upload_portfolio(orig_file, trans_file)
+                            st.success("Successfully added to portfolio!")
+                            st.rerun()
+                        else:
+                            st.error("Please provide both original and translated files.")
+
+                st.markdown("---")
+                st.markdown("#### Current Examples")
+                for pair in stats.get('example_screenshots', []):
+                    if '|' in pair:
+                        o, t = pair.split('|')
+                        c1, c2 = st.columns(2)
+                        c1.image(o, width=150, caption="Original")
+                        c2.image(t, width=150, caption="Translated")
+            
+            with set_tabs[2]:
+                st.markdown("### Danger Zone")
+                st.button("🔥 Factory Reset System", type="secondary", disabled=True)
+                    
+        except Exception as e:
+            st.error(f"Failed to load admin stats: {e}")
+        
+        return
+
     tab_process, tab_review = st.tabs(["📋 Processing Queue", "📖 Review Results"])
     
     with tab_process:
