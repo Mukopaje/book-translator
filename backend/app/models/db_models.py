@@ -115,3 +115,49 @@ class Page(Base):
 
     # Relationships
     project = relationship("Project", back_populates="pages")
+
+
+class DocumentType(str, enum.Enum):
+    QUOTATION = "QUOTATION"
+    INVOICE = "INVOICE"
+    RECEIPT = "RECEIPT"
+
+
+class DocumentStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    SENT = "SENT"
+    PAID = "PAID"
+    VOID = "VOID"
+
+
+class BillingDocument(Base):
+    """CRM table for Invoices, Quotations, and Receipts."""
+    __tablename__ = "billing_documents"
+    
+    id = Column(String(36), primary_key=True, index=True) # UUID string
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    doc_type = Column(Enum(DocumentType, values_callable=lambda obj: [e.value for e in obj]), nullable=False)
+    status = Column(Enum(DocumentStatus, values_callable=lambda obj: [e.value for e in obj]), default=DocumentStatus.DRAFT, nullable=False)
+    
+    amount = Column(Float, nullable=False)
+    currency = Column(String(10), default="USD")
+    items = Column(Text, nullable=True) # JSON string of line items
+    
+    stripe_invoice_id = Column(String(255), nullable=True)
+    pdf_gcs_path = Column(String(500), nullable=True)
+    
+    # Financial details
+    tax_rate = Column(Float, default=0.0) # Percentage
+    discount_rate = Column(Float, default=0.0) # Percentage or flat amount
+    notes = Column(Text, nullable=True)
+    
+    due_date = Column(DateTime(timezone=True), nullable=True)
+    expiry_date = Column(DateTime(timezone=True), nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    user = relationship("User")

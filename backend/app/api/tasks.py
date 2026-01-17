@@ -1,7 +1,8 @@
 """Task management API endpoints."""
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import Optional, List
+from datetime import datetime
 from app.database import get_db
 from app.models.db_models import User, Project, Page
 from app.api.dependencies import get_current_user
@@ -199,6 +200,21 @@ def cleanup_stuck_tasks(
     }
 
 
+@router.get("/public/info")
+def get_public_info():
+    """Get public site information for the landing page."""
+    from app.config import settings
+    return {
+        "company_name": settings.company_name,
+        "company_logo_url": settings.company_logo_url,
+        "company_logo_size": settings.company_logo_size,
+        "site_primary_color": settings.site_primary_color,
+        "site_secondary_color": settings.site_secondary_color,
+        "site_contact_info": settings.site_contact_info,
+        "example_screenshots": settings.example_screenshots.split(",") if settings.example_screenshots else []
+    }
+
+
 @router.get("/admin/stats")
 def get_admin_stats(
     current_user: User = Depends(get_current_user),
@@ -242,7 +258,21 @@ def get_admin_stats(
              "total_revenue": estimated_mrr * 1.5, # Placeholder
              "currency": "USD"
         },
-        "example_screenshots": settings.example_screenshots.split(",") if settings.example_screenshots else []
+        "example_screenshots": settings.example_screenshots.split(",") if settings.example_screenshots else [],
+        "settings": {
+             "company_name": settings.company_name,
+             "company_address": settings.company_address,
+             "company_email": settings.company_email,
+             "company_phone": settings.company_phone,
+             "company_logo_url": settings.company_logo_url,
+             "company_logo_size": settings.company_logo_size,
+             "site_primary_color": settings.site_primary_color,
+             "site_secondary_color": settings.site_secondary_color,
+             "site_contact_info": settings.site_contact_info,
+             "smtp_server": settings.smtp_server,
+             "smtp_port": settings.smtp_port,
+             "smtp_user": settings.smtp_user
+        }
     }
 
 
@@ -336,6 +366,166 @@ def list_users_for_admin(
         "subscription_status": u.subscription_status,
         "is_admin": u.is_admin
     } for u in users]
+
+
+@router.get("/admin/documents")
+def list_billing_documents(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all billing documents for CRM (Admin only)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    from app.models.db_models import BillingDocument
+    docs = db.query(BillingDocument).order_by(BillingDocument.created_at.desc()).all()
+    return docs
+
+
+class CreateDocumentRequest(BaseModel):
+    user_id: int
+    doc_type: str # QUOTATION, INVOICE, RECEIPT
+    amount: float
+    items: List[dict]
+    currency: Optional[str] = "USD"
+    tax_rate: Optional[float] = 0.0
+    discount_rate: Optional[float] = 0.0
+    notes: Optional[str] = None
+    due_date: Optional[datetime] = None
+
+
+@router.post("/admin/documents")
+def create_billing_document(
+    request: CreateDocumentRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a professional billing document (Admin only)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    from app.models.db_models import BillingDocument, User as UserModel
+    from app.services.billing_service import BillingPDFGenerator
+    from app.config import settings
+    import uuid
+    import json
+    
+    target_user = db.query(UserModel).filter(UserModel.id == request.user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    doc_id = str(uuid.uuid4())
+    items_json = json.dumps(request.items)
+    
+    company_info = {
+        "company_name": settings.company_name,
+        "company_address": settings.company_address
+    }
+    
+    # Generate PDF
+    pdf_gen = BillingPDFGenerator()
+    pdf_path = pdf_gen.generate_document(
+        doc_id=doc_id,
+        doc_type=request.doc_type,
+        user_email=target_user.email,
+        amount=request.amount,
+        items_json=items_json,
+        status="PAID" if request.doc_type == "RECEIPT" else "SENT",
+        currency=request.currency,
+        tax_rate=request.tax_rate,
+        discount_rate=request.discount_rate,
+        notes=request.notes,
+        due_date=request.due_date.strftime('%Y-%m-%d') if request.due_date else None,
+        company_info=company_info
+    )
+    
+    new_doc = BillingDocument(
+        id=doc_id,
+        user_id=request.user_id,
+        doc_type=request.doc_type,
+        amount=request.amount,
+        items=items_json,
+        currency=request.currency,
+        tax_rate=request.tax_rate,
+        discount_rate=request.discount_rate,
+        notes=request.notes,
+        due_date=request.due_date,
+        status="PAID" if request.doc_type == "RECEIPT" else "SENT",
+        pdf_gcs_path=pdf_path
+    )
+    
+    db.add(new_doc)
+    db.commit()
+    db.refresh(new_doc)
+    
+    return new_doc
+
+
+@router.post("/admin/documents/{doc_id}/convert")
+def convert_quotation_to_invoice(
+    doc_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Convert an existing QUOTATION to an INVOICE."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    from app.models.db_models import BillingDocument, User as UserModel
+    from app.services.billing_service import BillingPDFGenerator
+    from app.config import settings
+    import uuid
+    
+    old_doc = db.query(BillingDocument).filter(BillingDocument.id == doc_id).first()
+    if not old_doc or old_doc.doc_type != "QUOTATION":
+        raise HTTPException(status_code=400, detail="Valid Quotation not found")
+    
+    new_id = str(uuid.uuid4())
+    target_user = db.query(UserModel).filter(UserModel.id == old_doc.user_id).first()
+
+    company_info = {
+        "company_name": settings.company_name,
+        "company_address": settings.company_address
+    }
+    
+    # Generate new PDF for Invoice
+    pdf_gen = BillingPDFGenerator()
+    pdf_path = pdf_gen.generate_document(
+        doc_id=new_id,
+        doc_type="INVOICE",
+        user_email=target_user.email,
+        amount=old_doc.amount,
+        items_json=old_doc.items,
+        status="SENT",
+        currency=old_doc.currency,
+        tax_rate=old_doc.tax_rate,
+        discount_rate=old_doc.discount_rate,
+        notes=old_doc.notes,
+        company_info=company_info
+    )
+    
+    new_doc = BillingDocument(
+        id=new_id,
+        user_id=old_doc.user_id,
+        doc_type="INVOICE",
+        amount=old_doc.amount,
+        items=old_doc.items,
+        currency=old_doc.currency,
+        tax_rate=old_doc.tax_rate,
+        discount_rate=old_doc.discount_rate,
+        notes=old_doc.notes,
+        status="SENT",
+        pdf_gcs_path=pdf_path
+    )
+    
+    # Mark old quote as VOID or COMPLETED?
+    old_doc.status = "PAID" # Logic: accepted quotes are closed
+    
+    db.add(new_doc)
+    db.commit()
+    db.refresh(new_doc)
+    
+    return new_doc
 
 
 class StripeConfigRequest(BaseModel):

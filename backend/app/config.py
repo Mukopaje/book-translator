@@ -40,6 +40,25 @@ class Settings(BaseSettings):
     # Portfolio Examples (GCS Paths) - format: "orig_url|trans_url,orig_url|trans_url"
     example_screenshots: str = ""
 
+    # Company Details
+    company_name: str = "Technical Book Translator"
+    company_address: str = ""
+    company_email: str = "support@example.com"
+    company_phone: str = ""
+    company_logo_url: str = ""
+    company_logo_size: int = 100 # percentage
+
+    # Site Branding
+    site_primary_color: str = "#3b82f6"
+    site_secondary_color: str = "#1e3a8a"
+    site_contact_info: str = "Available 24/7 for technical support."
+
+    # Email Settings
+    smtp_server: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+
     # CORS
     allowed_origins: str = "http://localhost:8501"
     

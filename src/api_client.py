@@ -186,6 +186,12 @@ class APIClient:
         response.raise_for_status()
         return response.json()
 
+    def get_public_info(self) -> Dict[str, Any]:
+        """Get public site information."""
+        response = requests.get(f"{self.base_url}/tasks/public/info")
+        response.raise_for_status()
+        return response.json()
+
     def get_admin_stats(self) -> Dict[str, Any]:
         """Get system-wide statistics (Admin only)."""
         response = requests.get(
@@ -211,6 +217,34 @@ class APIClient:
             f"{self.base_url}/tasks/billing/create-checkout-session",
             headers=self._headers(),
             params={"plan": plan}
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_list_documents(self) -> list:
+        """List all billing documents (Admin only)."""
+        response = requests.get(
+            f"{self.base_url}/tasks/admin/documents",
+            headers=self._headers()
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_create_document(self, doc_data: dict) -> Dict[str, Any]:
+        """Create a professional billing document (Admin only)."""
+        response = requests.post(
+            f"{self.base_url}/tasks/admin/documents",
+            headers=self._headers(),
+            json=doc_data
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def admin_convert_quote(self, doc_id: str) -> Dict[str, Any]:
+        """Convert a quotation to an invoice (Admin only)."""
+        response = requests.post(
+            f"{self.base_url}/tasks/admin/documents/{doc_id}/convert",
+            headers=self._headers()
         )
         response.raise_for_status()
         return response.json()
